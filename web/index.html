@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#fbfaf7">
+<title>Documents</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/static/favicon.png">
+<link rel="apple-touch-icon" href="/static/icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/style.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+</head>
+<body>
+<svg class="sprite" aria-hidden="true">
+  <symbol id="i-letter" viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h4"/></symbol>
+  <symbol id="i-qp" viewBox="0 0 24 24"><path d="M9 4h6M9 4a2 2 0 0 0-2 2H6a1 1 0 0 0-1 1v13a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V7a1 1 0 0 0-1-1h-1a2 2 0 0 0-2-2"/><path d="M9 11h6M9 15h6"/></symbol>
+  <symbol id="i-new" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-pdf" viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M9 15l2 2 4-4"/></symbol>
+  <symbol id="i-edit" viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/></symbol>
+  <symbol id="i-chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></symbol>
+  <symbol id="i-back" viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></symbol>
+  <symbol id="i-cam" viewBox="0 0 24 24"><path d="M4 8h3l2-3h6l2 3h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z"/><circle cx="12" cy="13.5" r="3.5"/></symbol>
+  <symbol id="i-image" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="1.6"/><path d="M21 16l-5-5-9 9"/></symbol>
+  <symbol id="i-up" viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6"/></symbol>
+  <symbol id="i-dl" viewBox="0 0 24 24"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></symbol>
+  <symbol id="i-cloud" viewBox="0 0 24 24"><path d="M7 18a4.5 4.5 0 0 1-.6-8.96A6 6 0 0 1 18 9.5a4 4 0 0 1-.5 8.5z"/><path d="M12 15V10M9.5 12.5L12 10l2.5 2.5"/></symbol>
+  <symbol id="i-cloud-ok" viewBox="0 0 24 24"><path d="M7 18a4.5 4.5 0 0 1-.6-8.96A6 6 0 0 1 18 9.5a4 4 0 0 1-.5 8.5z"/><path d="M9.5 13l2 2 3.5-3.5"/></symbol>
+  <symbol id="i-cloud-off" viewBox="0 0 24 24"><path d="M7 18a4.5 4.5 0 0 1-.6-8.96A6 6 0 0 1 18 9.5a4 4 0 0 1-.5 8.5z"/><path d="M12 10.5v3M12 15.8v.2"/></symbol>
+  <symbol id="i-share" viewBox="0 0 24 24"><circle cx="18" cy="5.5" r="2.5"/><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="18.5" r="2.5"/><path d="M8.2 10.8l7.6-4.1M8.2 13.2l7.6 4.1"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+</svg>
+
+<header class="top" id="top" hidden>
+  <button id="back" class="icon-btn" aria-label="Back"><svg><use href="#i-back"/></svg></button>
+  <h1 id="top-title"></h1>
+  <div id="doc-actions" class="top-actions" hidden>
+    <a id="sync" class="sync" hidden></a>
+    <div class="menu-wrap">
+      <button id="dl" class="link" data-menu="dl-menu" aria-label="Download" aria-haspopup="true" aria-expanded="false"><svg><use href="#i-dl"/></svg><span>Download</span></button>
+      <div id="dl-menu" class="menu" role="menu" hidden>
+        <a id="dl-pdf" role="menuitem"><svg><use href="#i-pdf"/></svg>PDF</a>
+        <a id="dl-docx" role="menuitem"><svg><use href="#i-edit"/></svg>Word</a>
+      </div>
+    </div>
+    <div class="menu-wrap">
+      <button id="share" class="btn primary small" data-menu="share-menu" aria-haspopup="true" aria-expanded="false"><svg><use href="#i-share"/></svg><span>Share</span></button>
+      <div id="share-menu" class="menu" role="menu" hidden>
+        <a id="share-pdf" role="menuitem"><svg><use href="#i-pdf"/></svg>Send PDF</a>
+        <a id="share-docx" role="menuitem"><svg><use href="#i-edit"/></svg>Send Word file</a>
+      </div>
+    </div>
+  </div>
+</header>
+
+<!-- Home -->
+<main id="home" class="screen">
+  <h1 class="page-title">Documents</h1>
+  <p class="school">Gandhi Colony Madhyamik Vidyalaya</p>
+  <h2>Make a new document</h2>
+  <div id="templates" class="tiles"></div>
+  <h2 id="recent-h" hidden>Recent</h2>
+  <ul id="recent" class="rows"></ul>
+</main>
+
+<!-- Choose format -->
+<main id="format" class="screen" hidden>
+  <h2 class="lead">What kind of file do you need?</h2>
+  <ul class="rows">
+    <li><button class="row" data-format="pdf">
+      <svg class="ico"><use href="#i-pdf"/></svg>
+      <span class="t"><b>PDF <i class="rec">recommended</i></b>
+        <span class="wrap">Looks exactly the same on every phone and computer. Others can read and print it, but cannot change it.</span></span>
+      <svg class="chev"><use href="#i-chev"/></svg>
+    </button></li>
+    <li><button class="row" data-format="docx">
+      <svg class="ico"><use href="#i-edit"/></svg>
+      <span class="t"><b>Word document</b>
+        <span class="wrap">You or teachers can edit it later. On other people's phones or computers, the fonts and spacing may look a little different.</span></span>
+      <svg class="chev"><use href="#i-chev"/></svg>
+    </button></li>
+  </ul>
+</main>
+
+<!-- Give content -->
+<main id="content" class="screen" hidden>
+  <h2 class="lead">Send a photo of the page, or type the text.</h2>
+  <div class="photo-buttons">
+    <label class="btn primary"><svg><use href="#i-cam"/></svg>Take a photo
+      <input type="file" accept="image/*" capture="environment" multiple hidden data-photos>
+    </label>
+    <label class="btn"><svg><use href="#i-image"/></svg>Choose photos
+      <input type="file" accept="image/*" multiple hidden data-photos>
+    </label>
+  </div>
+  <div id="thumbs" class="thumbs"></div>
+  <textarea id="content-text" rows="6" aria-label="Text and instructions"
+    placeholder="Type or paste the text here, with any instructions."></textarea>
+  <button id="start" class="btn primary wide">Make the document</button>
+</main>
+
+<!-- Job: chat + document -->
+<main id="job" class="screen job" hidden>
+  <div class="seg" role="tablist">
+    <button class="on" data-tab="chat">Chat</button>
+    <button data-tab="doc">Document<i id="doc-dot" class="dot" hidden></i></button>
+  </div>
+  <section id="chat" class="pane chat-pane">
+    <div id="messages" class="messages" aria-live="polite"></div>
+    <div id="chat-thumbs" class="thumbs small"></div>
+    <form id="composer" class="composer">
+      <label class="icon-btn" aria-label="Add photo"><svg><use href="#i-cam"/></svg>
+        <input type="file" accept="image/*" multiple hidden id="chat-photos">
+      </label>
+      <textarea id="chat-text" rows="1" placeholder="Message" aria-label="Message"></textarea>
+      <button class="send" id="send" aria-label="Send"><svg><use href="#i-up"/></svg></button>
+    </form>
+  </section>
+  <section id="doc" class="pane doc-pane">
+    <div class="desk">
+      <p id="doc-empty" class="doc-empty">The document will appear here.</p>
+      <div id="pages" class="pages"></div>
+    </div>
+  </section>
+</main>
+
+<div id="toast" class="toast" role="status" hidden></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

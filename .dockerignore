@@ -1,0 +1,10 @@
+.git
+.venv
+.env
+data
+reference
+assets/signature.*
+__pycache__
+*.pyc
+.claude
+.impeccable

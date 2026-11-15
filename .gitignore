@@ -1,0 +1,8 @@
+.venv/
+data/
+.env
+__pycache__/
+reference/
+assets/signature.*
+.impeccable/
+templates/question_paper/examples/

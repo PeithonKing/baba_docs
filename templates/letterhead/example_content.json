@@ -1,0 +1,12 @@
+{
+  "date": "2 Jan 2026",
+  "memo": null,
+  "title": "Notice",
+  "signature": true,
+  "blocks": [
+    {"type": "para", "italic": true, "text": "All are requested to submit\ni) their Spouse's PAYSLIP along with the HRA Declaration form within 5th January, 2026.\nii) the statement of the exact amount of Income Tax to be deducted from their salary of this month onwards (within 5th)."},
+    {"type": "para", "italic": true, "text": "This is **very urgent** for the Salary Requisition of this month."},
+    {"type": "para", "italic": true, "text": "Your active cooperation is solicited."},
+    {"type": "para", "text": "সকল শিক্ষক-শিক্ষিকাকে **অনুরোধ** করা হচ্ছে।"}
+  ]
+}

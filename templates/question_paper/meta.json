@@ -1,0 +1,9 @@
+{
+  "id": "question_paper",
+  "name": "Question paper",
+  "description": "English or Bengali",
+  "icon": "qp",
+  "formats": ["pdf"],
+  "nextcloud_folder": "Question Papers",
+  "order": 2
+}

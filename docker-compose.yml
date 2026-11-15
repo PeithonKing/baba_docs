@@ -1,0 +1,36 @@
+services:
+  baba-docs:
+    build:
+      context: .
+      args:
+        HOST_USER: ${HOST_USER:-aritra}
+        HOST_UID: ${HOST_UID:-1000}
+        HOST_GID: ${HOST_GID:-1000}
+    image: baba-docs:latest
+    container_name: baba-docs
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      GCMV_CLAUDE_CLI: /home/${HOST_USER:-aritra}/.local/bin/claude
+    volumes:
+      - ./data:/app/data
+      # The host's Claude Code: binary (read-only) and login/session state (shared with the host).
+      # ~/.local/bin is mounted as a folder so its `claude` symlink keeps following host updates.
+      - ${HOME}/.local/share/claude:/home/${HOST_USER:-aritra}/.local/share/claude:ro
+      - ${HOME}/.local/bin:/home/${HOST_USER:-aritra}/.local/bin:ro
+      - ${HOME}/.claude:/home/${HOST_USER:-aritra}/.claude
+    ports:
+      - "8765:8765"   # LAN / Tailscale (device lock off there)
+    networks:
+      - exposed_internet   # cloudflared, nextcloud, collabora
+    labels:
+      glance.name: School Documents
+      glance.icon: di:nextcloud
+      glance.url: http://192.168.29.4:8765
+      glance.description: Baba's document assistant (Claude)
+      glance.id: baba-docs
+      glance.category: general
+
+networks:
+  exposed_internet:
+    external: true

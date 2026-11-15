@@ -1,0 +1,12 @@
+{
+  "title": "Class Routine – Class VIII (2026)",
+  "blocks": [
+    {"type": "heading", "text": "Monday to Friday", "level": 2},
+    {"type": "table", "rows": [["Period", "Time", "Subject"], ["1", "10:30 – 11:15", "English"], ["2", "11:15 – 12:00", "বাংলা"], ["3", "12:00 – 12:45", "Mathematics"]], "header": true, "widths": [2.5, 5, 9.5]},
+    {"type": "heading", "text": "Notes", "level": 2},
+    {"type": "list", "items": ["Tiffin break: 12:45 – 1:15", "Games on **Saturday** only"], "numbered": false},
+    {"type": "list", "items": ["Bring the diary daily", "Uniform is compulsory"], "numbered": true},
+    {"type": "page_break"},
+    {"type": "para", "text": "Page two works too.", "italic": true}
+  ]
+}
