@@ -97,7 +97,26 @@ async def sw():
     return FileResponse(config.WEB / "sw.js", media_type="text/javascript", headers={"Cache-Control": "no-cache"})
 
 
+ENROLL_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Add this device</title>
+<style>body{margin:0;min-height:100dvh;display:grid;place-items:center;background:#fbfaf7;color:#1c1c1a;
+font:18px/1.45 system-ui,sans-serif;padding:1.5rem;box-sizing:border-box;text-align:center}
+img{width:84px}h1{font-size:1.4rem;font-weight:500;margin:.8rem 0 .3rem}p{color:#64625d;margin:0 0 1.4rem}
+button{font:inherit;font-weight:500;background:#1c1c1a;color:#fff;border:0;border-radius:14px;padding:.9rem 1.6rem}
+small{display:block;margin-top:1.2rem;color:#9a988f;font-size:.8rem}</style></head><body><form method="post">
+<img src="/static/icon-192.png" alt=""><h1>School Documents</h1><p>Use this app on this device?</p>
+<button type="submit">Add this device</button>
+<small>Open this page in Chrome or Brave, not inside WhatsApp.</small></form></body></html>"""
+
+
 @app.get("/enroll/{code}")
+async def enroll_page(code: str):
+    if not guard.code_valid(code):
+        return PlainTextResponse("This link has expired or was already used. Ask for a new one.", status_code=404)
+    return HTMLResponse(ENROLL_PAGE, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/enroll/{code}")
 async def enroll(code: str, request: Request):
     hit = guard.redeem(code)
     if not hit:

@@ -17,6 +17,9 @@ from starlette.responses import PlainTextResponse
 from . import config
 
 COOKIE = "gcmv_device"
+# Fetched by the browser WITHOUT cookies when deciding whether the site can be installed as an
+# app; they hold nothing private (name, colours, the school crest).
+PUBLIC_PATHS = {"/manifest.webmanifest", "/static/icon-192.png", "/static/icon-512.png", "/static/favicon.png"}
 ONE_YEAR = 365 * 24 * 3600
 
 
@@ -57,6 +60,11 @@ def list_devices() -> dict:
 
 
 # ---- used by the app --------------------------------------------------------
+def code_valid(code: str) -> bool:
+    now = time.time()
+    return any(e["code"] == code and e["expires"] > now for e in _load()["enroll"])
+
+
 def redeem(code: str) -> tuple[str, str] | None:
     """Enroll code → (device name, fresh token). One-time use."""
     d = _load()
@@ -102,7 +110,8 @@ def guard_applies(request: Request) -> bool:
 
 class DeviceGuard(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        if request.url.path.startswith("/enroll/") or not guard_applies(request):
+        p = request.url.path
+        if p.startswith("/enroll/") or p in PUBLIC_PATHS or not guard_applies(request):
             return await call_next(request)
         if device_for(request) is None:
             return PlainTextResponse("Not Found", status_code=404)
