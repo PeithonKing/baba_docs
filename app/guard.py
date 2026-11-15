@@ -48,11 +48,11 @@ def new_enroll_code(name: str, ttl_hours: int = 48) -> str:
 
 def remove_device(name: str) -> int:
     d = _load()
-    before = len(d["devices"])
+    before = len(d["devices"]) + len(d["enroll"])
     d["devices"] = [x for x in d["devices"] if x["name"] != name]
     d["enroll"] = [x for x in d["enroll"] if x["name"] != name]
     _save(d)
-    return before - len(d["devices"])
+    return before - len(d["devices"]) - len(d["enroll"])  # devices + unused links removed
 
 
 def list_devices() -> dict:

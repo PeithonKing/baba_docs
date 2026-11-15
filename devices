@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Manage which devices may open the app from the internet (LAN/Tailscale need no key).
+#
+#   ./devices                     list devices and unused links
+#   ./devices add baba-phone      make a one-time link + QR code for a device
+#   ./devices remove baba-phone   revoke a device (or its unused link)
+#   ./devices reset               revoke everything
+#
+# Runs on the server over ssh. Override with env vars if your setup differs:
+#   BABA_HOST (ssh host, default pi5)   BABA_DIR (default HOMELAB/baba_docs)
+#   BABA_URL (public address, default https://docs.peithonking.com)   BABA_HOURS (link validity, default 48)
+set -euo pipefail
+
+HOST=${BABA_HOST:-pi5}
+DIR=${BABA_DIR:-HOMELAB/baba_docs}
+URL=${BABA_URL:-https://docs.peithonking.com}
+HOURS=${BABA_HOURS:-48}
+
+manage() {
+  local cmd="cd $DIR && docker compose exec baba-docs python manage.py $*"
+  if [ "$(hostname -s)" = "$HOST" ]; then
+    (cd ~/"$DIR" && docker compose exec baba-docs python manage.py "$@")
+  else
+    ssh -t -o LogLevel=ERROR "$HOST" "bash -lc '$cmd'"
+  fi
+}
+
+name_ok() {
+  [[ "${1:-}" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "Give a device name like baba-phone (letters, digits, - and _ only)." >&2; exit 1; }
+}
+
+case "${1:-list}" in
+  list|ls)      manage list ;;
+  add|new)      name_ok "${2:-}"; manage add-device "$2" --base "$URL" --hours "$HOURS" --qr
+                echo "Open the link (or scan the QR) on that device, in the browser he will use,"
+                echo "tap \"Add this device\", then Chrome menu -> Install app." ;;
+  remove|rm)    name_ok "${2:-}"; manage remove-device "$2" ;;
+  reset)        manage remove-all ;;
+  -h|--help|help) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *)            echo "Unknown command: $1 (try ./devices help)" >&2; exit 1 ;;
+esac
