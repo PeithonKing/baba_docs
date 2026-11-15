@@ -1,5 +1,6 @@
 """Web server. Run: .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8765"""
 import asyncio
+import hashlib
 import contextlib
 import json
 import logging
@@ -7,7 +8,7 @@ import time
 from io import BytesIO
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageOps
 
@@ -68,9 +69,22 @@ app.mount("/static", StaticFiles(directory=config.WEB), name="static")
 
 
 # ---- pages ------------------------------------------------------------------
+def _busted_index() -> str:
+    """index.html with ?v=<content hash> on our own JS/CSS, so a deploy is never hidden behind a
+    cached copy (Cloudflare's browser-cache TTL overrides our no-cache on .js/.css)."""
+    html = (config.WEB / "index.html").read_text()
+    for name in ("app.js", "style.css"):
+        h = hashlib.sha256((config.WEB / name).read_bytes()).hexdigest()[:10]
+        html = html.replace(f"/static/{name}", f"/static/{name}?v={h}")
+    return html
+
+
+INDEX_HTML = _busted_index()
+
+
 @app.get("/")
 async def index():
-    return FileResponse(config.WEB / "index.html", headers={"Cache-Control": "no-cache"})
+    return HTMLResponse(INDEX_HTML, headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/manifest.webmanifest")
