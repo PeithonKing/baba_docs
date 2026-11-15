@@ -54,6 +54,16 @@ def _catch_up_sync(j: jobs.Job):
 
 app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 app.add_middleware(guard.DeviceGuard)
+
+
+@app.middleware("http")
+async def no_edge_cache(request: Request, call_next):
+    """Cloudflare would otherwise cache /static/*.js|css for hours; the files are tiny, so
+    always revalidate (ETag makes repeat loads cheap)."""
+    resp = await call_next(request)
+    if request.url.path.startswith("/static/") or request.url.path in ("/", "/sw.js", "/manifest.webmanifest"):
+        resp.headers["Cache-Control"] = "no-cache"
+    return resp
 app.mount("/static", StaticFiles(directory=config.WEB), name="static")
 
 
