@@ -320,7 +320,7 @@ async function openJob(id) {
   $("#top-title").textContent = job.title;
   for (const ev of job.events) handleEvent(ev, true);
   setBusy(job.busy);
-  if (job.busy && !openCard()) setStatus("Working…");
+  if (job.busy && !job.waiting) setStatus("Working…");
   if (job.original) await loadOriginal();
   if (job.outputs.preview) await loadPreview(job.outputs, true);
   if (run !== openJob.run) return;
@@ -372,7 +372,7 @@ function handleEvent(ev, replay) {
       if (!replay) { setStatus(ev.text); if (/PDF|Word|document/.test(ev.text)) setUpdating(true); }
       break;
     case "question": setStatus(null); box.append(questionCard(normalizeCard(ev), replay)); renderDrafting(); break;
-    case "answered": cardDone(openCard(), ev.answers || [], ev.message); renderDrafting(); break;
+    case "answered": cardDone(ev.id ? $(`.q[data-id="${ev.id}"]`) : openCard(), ev.answers || []); renderDrafting(); break;
     case "error": setStatus(null); add(el("div", "msg err", ev.text)); break;
     case "interrupted": setStatus(null); add(el("div", "msg note", ev.text)); break;
     case "title": job.title = ev.title; $("#top-title").textContent = ev.title; break;
@@ -400,7 +400,6 @@ function handleEvent(ev, replay) {
   }
   scrollChat();
   renderPill();
-  syncSend();
 }
 
 // ---------------- question cards ----------------
@@ -415,6 +414,7 @@ function questionCard(card, replay) {
   const qs = card.questions;
   const wrap = el("div", "q");
   wrap.card = card;
+  if (card.id) wrap.dataset.id = card.id;
   wrap.answers = qs.map((q) => (q.multiple ? [] : null));
   wrap.others = qs.map(() => "");
   if (card.intro) wrap.append(el("p", "intro", card.intro));
@@ -581,20 +581,23 @@ function nudgeLater(wrap) {
   }, 30000);
 }
 
-async function sendCard(wrap, message = "") {
+// Answers go back for this card only. A card closes only when it is answered — typing, photos or
+// pen marks sent meanwhile leave it open, to be answered whenever he likes.
+async function sendCard(wrap) {
   if (wrap.sending) return;
   wrap.sending = true;
   const answers = wrap.card.questions.map((_, i) => answerText(wrap, i));
   try {
-    await postJSON(`/api/jobs/${job.id}/answer`, { answers, message });
-    cardDone(wrap, answers, message);
+    const r = await fetch(`/api/jobs/${job.id}/answer`, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: wrap.card.id, answers }) });
+    if (r.ok || r.status === 409) cardDone(wrap, answers);  // 409: it was already answered
+    else throw new Error(r.status);
   } catch { toast("Could not send. Please try again."); }
   finally { wrap.sending = false; }
 }
 
-function cardDone(wrap, answers, message) {
+function cardDone(wrap, answers) {
   if (!wrap || wrap.classList.contains("done")) return;
-  setTimeout(syncSend);
   clearTimeout(wrap.nudge); clearPointer();
   wrap.classList.add("done"); wrap.classList.remove("nudge");
   const body = wrap.querySelector(".q-body"); body.innerHTML = "";
@@ -606,7 +609,7 @@ function cardDone(wrap, answers, message) {
     if (a) list.append(el("dt", null, q.question), el("dd", null, a));
   });
   body.append(list);
-  if (message) body.append(el("p", "note", "You wrote a message instead."));
+  renderPill();
 }
 
 // ---------------- composer ----------------
@@ -617,30 +620,27 @@ $("#composer").onsubmit = async (e) => {
   const text = ta.value.trim();
   const a = attach.chat;
   if (!text && !a.files.length && !a.nc.length) return;
-  // a question card is open: send what he answered so far plus his message
-  const card = openCard();
-  if (card && !a.files.length && !a.nc.length) { ta.value = ""; ta.style.height = ""; return sendCard(card, text); }
-  if (busy) return toast("Please wait a moment.");
+  // Always sent, whatever else is going on (open cards stay open; the agent gets it right away
+  // or as soon as it finishes what it is doing).
   const fd = new FormData(); fd.append("text", text);
+  const keep = { text, files: [...a.files], nc: [...a.nc] };
   attachForm(fd, "chat");
   ta.value = ""; ta.style.height = "";
-  await sendMessage(fd);
+  if (!(await sendMessage(fd))) {  // put it back so nothing he wrote is lost
+    ta.value = keep.text; attach.chat = { files: keep.files, nc: keep.nc }; renderAttach("chat");
+  }
 };
 async function sendMessage(fd) {
-  setBusy(true);
-  try { await api(`/api/jobs/${job.id}/message`, { method: "POST", body: fd }); }
-  catch { setBusy(false); toast("Could not send. Please try again."); }
+  const btn = $("#send"); btn.disabled = true;  // only against a double tap
+  try { await api(`/api/jobs/${job.id}/message`, { method: "POST", body: fd }); return true; }
+  catch { toast("Could not send. Please try again."); return false; }
+  finally { btn.disabled = false; }
 }
 async function sendText(text) {
-  const card = openCard();
-  if (card) return sendCard(card, text);
-  if (busy) return toast("Please wait a moment.");
   const fd = new FormData(); fd.append("text", text);
-  await sendMessage(fd);
+  return sendMessage(fd);
 }
-function setBusy(b) { busy = b; syncSend(); }
-// While a question card is open he can always write: the message goes along with his answers.
-function syncSend() { $("#send").disabled = busy && !openCard(); }
+function setBusy(b) { busy = b; }
 
 // tabs (phone)
 function setTab(t) {
@@ -1117,11 +1117,14 @@ async function sendMarks() {
     fd.append("marks", new File([blob], `page-${n + 1}.jpg`, { type: "image/jpeg" }));
   }
   if (!any) return toast("Mark something on the page first.");
-  if (busy) return toast("Please wait a moment.");
-  const text = $("#chat-text").value.trim(); $("#chat-text").value = "";
+  const text = $("#chat-text").value.trim();
   fd.append("text", text); fd.append("marks_on", marking.key);
+  $("#pen-send").disabled = true;
+  const ok = await sendMessage(fd);  // if it fails, the marks stay on the page to try again
+  $("#pen-send").disabled = false;
+  if (!ok) return;
+  $("#chat-text").value = "";
   stopMarking();
-  await sendMessage(fd);
 }
 
 function setMenuItem(a, file) {
@@ -1202,8 +1205,8 @@ function safeToReload() {
   const a = attach;
   if (a.content.files.length || a.content.nc.length || a.chat.files.length || a.chat.nc.length) return false;
   if ($$("textarea").some((t) => t.value.trim())) return false;
-  const card = openCard();
-  if (card && (card.step > 0 || card.answers.some((x) => (Array.isArray(x) ? x.length : x != null)))) return false;
+  for (const card of $$(".q:not(.done)"))  // a half-answered card would lose its taps
+    if (card.step > 0 || card.answers.some((x) => (Array.isArray(x) ? x.length : x != null))) return false;
   return true;
 }
 function maybeReload() { if (updateReady && safeToReload()) location.reload(); }

@@ -59,3 +59,16 @@ Status: 1–6 done and deployed (build f0f6d538eb).
 - While marking, fingers are handled with pointer events (pointerType "touch") so the pen can
   never pan or zoom; the pen never reaches that code.
 - Holding the pen's side button (or using its eraser end) erases any line it touches.
+
+# Batch 3 (built and tested locally, not deployed)
+
+## 10. No input blocks another; open questions stay open
+- Three kinds of input — a message (text, photos, files), pen marks, answers to a card — are accepted
+  at any time. The server never answers "busy" any more.
+  - agent waiting on a card → the input reaches it now; the card stays open if not answered
+  - agent working → kept and handed over at its next question or when it finishes
+  - agent idle → starts a new turn
+- Each card has an id and stays open (on screen and in job.json `open_cards`) until he answers it,
+  even several turns later; late answers reach the agent as "answers to your earlier questions".
+- The prompt tells the agent not to re-ask open questions.
+- A failed send puts the text/photos back (or keeps the pen marks on the page) instead of losing them.

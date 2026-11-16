@@ -25,7 +25,7 @@ services:
       - exposed_internet   # cloudflared, nextcloud, collabora
     labels:
       glance.name: School Documents
-      glance.icon: di:nextcloud
+      glance.icon: /assets/gcmv.png   # school crest, file lives in HOMELAB/glance/assets
       glance.url: http://192.168.29.4:8765
       glance.description: Baba's document assistant (Claude)
       glance.id: baba-docs

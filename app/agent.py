@@ -96,6 +96,8 @@ class AgentSession:
         self.last_used = time.time()
         self.task: asyncio.Task | None = None
         self.shutting_down = False  # server is stopping: not an error, keep the open question
+        self.live_card: str | None = None  # id of the card the agent is waiting on right now
+        self.inbox: list[str] = []  # things he sent while the agent was working (not waiting on him)
 
     # ---- events -----------------------------------------------------------
     @property
@@ -160,22 +162,25 @@ class AgentSession:
                     q["other"] = False
                 elif not q["options"]:
                     q["other"] = True
-            card = {"questions": qs, "intro": args.get("intro") or ""}
+            card = {"id": "c" + os.urandom(4).hex(), "questions": qs, "intro": args.get("intro") or ""}
             job = self.job
-            job.pending_question = card
+            job.open_cards.append(card)
             job.save()
             self.answer = asyncio.get_running_loop().create_future()
+            self.live_card = card["id"]
             self.emit({"type": "question", **card})
-            got = None
+            if self.inbox:  # he already sent something while you were working: hand it over now
+                self.answer.set_result({"kind": "message", "text": self._take_inbox()})
             try:
                 got = await self.answer
             finally:
-                self.answer = None
-                if got is not None:  # only a real answer closes it; a restart keeps it open
-                    job = self.job
-                    job.pending_question = None
-                    job.save()
-            return _text(format_answers(qs, got.get("answers") or [], got.get("message") or ""))
+                self.answer, self.live_card = None, None
+            if got["kind"] == "answers":
+                return _text(format_answers(qs, got["answers"], got.get("message") or ""))
+            return _text(
+                "He has not answered these questions yet. They stay open on his screen and he can answer "
+                "them whenever he likes (the answers will reach you then) — do not ask them again. "
+                "Meanwhile he sent this:\n\n" + got["text"])
 
         @tool("compile_pdf", "Build the PDF from a typst source file in the working folder (default main.typ). "
               "Returns errors to fix, or success. The new PDF is shown to him automatically.",
@@ -456,6 +461,8 @@ class AgentSession:
             finally:
                 self.busy, self.last_used = False, time.time()
                 self.emit({"type": "busy", "busy": False})
+                if self.inbox and not self.shutting_down:
+                    self.start_turn(self._take_inbox())
 
     def _handle(self, msg):
         if isinstance(msg, SystemMessage) and msg.subtype == "init":
@@ -482,16 +489,45 @@ class AgentSession:
             job.save()
             log.info("turn done job=%s turns=%s cost=%s", job.id, msg.num_turns, msg.total_cost_usd)
 
-    @property
-    def question_live(self) -> bool:
-        return bool(self.answer and not self.answer.done())
+    # ---- his input: never blocked ------------------------------------------------
+    # Three kinds of input — a message (typed text, photos, files), pen marks, answers to a card —
+    # can each arrive at any time. None of them waits for or cancels another:
+    #  - agent waiting on a card → the input is handed to it now (the card stays open if unanswered)
+    #  - agent working           → kept, and handed over at its next question or when it finishes
+    #  - agent idle              → starts a new turn
+    def _take_inbox(self) -> str:
+        text = "\n\n---\n\n".join(self.inbox)
+        self.inbox = []
+        return text
 
-    def give_answer(self, answers: list, message: str = "") -> bool:
+    def deliver(self, text: str):
         if self.answer and not self.answer.done():
-            self.emit({"type": "answered", "answers": answers, "message": message})
-            self.answer.set_result({"answers": answers, "message": message})
-            return True
-        return False
+            self.answer.set_result({"kind": "message", "text": text})
+        elif self.busy:
+            self.inbox.append(text)
+        else:
+            self.start_turn(text)
+
+    def answer_card(self, card_id: str | None, answers: list, message: str = "") -> bool:
+        """His answers to a card. Returns False if there is no such open card."""
+        job = self.job
+        card = next((c for c in job.open_cards if c["id"] == card_id), None) if card_id else None
+        if card is None and not card_id and job.pending_question:  # card from before cards had ids
+            old = job.pending_question
+            card = {"id": None, "questions": old.get("questions") or [{"question": old.get("question", "")}]}
+        if card is None:
+            return False
+        job.open_cards = [c for c in job.open_cards if c is not card and c.get("id") != card["id"]]
+        if card["id"] is None:
+            job.pending_question = None
+        job.save()
+        self.emit({"type": "answered", "id": card["id"], "answers": answers, "message": message})
+        if self.live_card and self.live_card == card["id"] and self.answer and not self.answer.done():
+            self.answer.set_result({"kind": "answers", "answers": answers, "message": message})
+        else:
+            self.deliver("He answered questions you asked earlier (they had stayed open on his screen):\n\n"
+                         + format_answers(card["questions"], answers, message))
+        return True
 
 
 class Sessions:

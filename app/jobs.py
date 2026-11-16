@@ -24,7 +24,10 @@ class Job:
     created: float = field(default_factory=time.time)
     updated: float = field(default_factory=time.time)
     session_id: str | None = None
-    pending_question: dict | None = None
+    pending_question: dict | None = None  # old single-card field (kept for old jobs)
+    # Question cards still waiting for his answers: [{"id", "questions", "intro"}]. A card stays
+    # here (and on his screen) until he answers it, even if he sends other things meanwhile.
+    open_cards: list = field(default_factory=list)
     preview_version: int = 0
     # Files the agent saved to Nextcloud: [{"path", "fileid", "etag", "at", "version"}], newest last.
     # "version" = preview_version that was saved (None if it was not the document itself).

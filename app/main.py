@@ -18,7 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageOps
 
 from . import config, guard, jobs, memory, nextcloud, render, sources
-from .agent import Sessions, format_answers
+from .agent import Sessions
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("gcmv")
@@ -386,7 +386,7 @@ async def api_open(device: str = Form(""), nc_path: str = Form(""), file: Upload
 async def api_job(job_id: str):
     j = _job_or_404(job_id)
     s = sessions.by_job.get(j.id)
-    return {**j.public(), "busy": bool(s and s.busy), "question_live": bool(s and s.question_live),
+    return {**j.public(), "busy": bool(s and s.busy), "waiting": bool(s and s.live_card),
             "events": j.events()}
 
 
@@ -394,20 +394,22 @@ async def api_job(job_id: str):
 async def api_message(job_id: str, text: str = Form(""), marks_on: str = Form(""),
                       nc_paths: list[str] = Form(default=[]), photos: list[UploadFile] = File(default=[]),
                       marks: list[UploadFile] = File(default=[])):
+    """A message, photos/files or pen marks. Accepted at any time (see AgentSession.deliver)."""
     j = _job_or_404(job_id)
     s = sessions.get(j)
-    if s.busy:
-        raise HTTPException(409, "busy")
     att = await _gather(j, photos, nc_paths) + await _gather(j, marks, [], prefix="mark")
+    if not text.strip() and not att:
+        raise HTTPException(400)
     s.emit({"type": "user", "text": text.strip(),
             "photos": [a["path"] for a in att if a["kind"] in ("photo", "mark")],
             "files": [a["name"] for a in att if a["kind"] not in ("photo", "mark")]})
-    s.start_turn(_compose(text, att, marks_on))
+    s.deliver(_compose(text, att, marks_on))
     return {"ok": True}
 
 
 @app.post("/api/jobs/{job_id}/answer")
 async def api_answer(job_id: str, request: Request):
+    """His answers to one question card ({"id", "answers"}). Accepted at any time."""
     j = _job_or_404(job_id)
     body = await request.json()
     answers = body.get("answers")
@@ -417,22 +419,8 @@ async def api_answer(job_id: str, request: Request):
     message = str(body.get("message") or "").strip()
     if not answers and not message:
         raise HTTPException(400)
-    s = sessions.get(j)
-    if s.give_answer(answers, message):
-        return {"ok": True}
-    # The question's tool call is gone (e.g. server restarted): resume the saved conversation.
-    if s.busy:
-        raise HTTPException(409, "busy")
-    card = j.pending_question or {}
-    qs = card.get("questions") or ([{"question": card["question"]}] if card.get("question") else [])
-    j.pending_question = None
-    j.save()
-    s.emit({"type": "answered", "answers": answers, "message": message})
-    s.start_turn(
-        "(The app restarted while you were waiting for his answers, so that question card's tool call was "
-        "interrupted. Do not ask the same questions again.)\n\n" + format_answers(qs, answers, message) +
-        "\n\nContinue from there."
-    )
+    if not sessions.get(j).answer_card(body.get("id"), answers, message):
+        raise HTTPException(409, "already answered")
     return {"ok": True}
 
 
