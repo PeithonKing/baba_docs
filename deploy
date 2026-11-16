@@ -16,8 +16,9 @@ BUMP=${1:-}
 
 run() { if [ "$(hostname -s)" = "$HOST" ]; then bash -lc "$1"; else ssh -o LogLevel=ERROR "$HOST" "bash -lc '$1'"; fi; }
 
-run "cd ~/$DIR && git pull --ff-only && git log --oneline -1 && docker compose up -d --build && sleep 4 && \
-     curl -fsS localhost:8765/api/version && echo"
+run "cd ~/$DIR && git pull --ff-only && git log --oneline -1 && docker compose up -d --build"
+# wait for the new server to answer (up to ~60 s), then show its build id
+run "for i in \$(seq 30); do curl -fsS localhost:8765/api/version 2>/dev/null && echo && exit 0; sleep 2; done; echo 'server did not answer'; exit 1"
 if [ "$BUMP" = "--bump" ]; then
   run "cd ~/${DIR%/*} && git add ${DIR##*/} && git commit -m \"${DIR##*/}: \$(git -C ${DIR##*/} log --format=%s -1)\" && git push"
 fi
