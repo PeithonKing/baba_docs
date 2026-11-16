@@ -42,3 +42,20 @@ Status: 1–6 done and deployed (build f0f6d538eb).
 ## 4. Nextcloud picker always starts at the top
 - Every time the Nextcloud button is tapped, open at his Nextcloud root, not the last folder used.
 - Where: `openPicker` in `web/app.js` (stop reusing `picker.path`).
+
+# Batch 2 (built and tested locally, not deployed)
+
+## 7. Send button stays usable while a question card is open
+- It was disabled whenever the agent was busy, and the agent counts as busy while waiting for answers.
+  Now it is disabled only when busy *and* no card is open (the message goes with his answers).
+
+## 8. Date / time questions + Indian time everywhere
+- `ask_user` question `type: "date" | "time"`: a calendar / clock instead of options (quick picks
+  optional). Answers come back like "Thursday, 19 November 2026" and "3:00 PM".
+- Server, agent shell and file times forced to Asia/Kolkata; prompt says all times are IST and to
+  never mention time zones; "today" in the first message includes the weekday.
+
+## 9. Pen marking: pen only writes, fingers only move/zoom; pen-button eraser
+- While marking, fingers are handled with pointer events (pointerType "touch") so the pen can
+  never pan or zoom; the pen never reaches that code.
+- Holding the pen's side button (or using its eraser end) erases any line it touches.

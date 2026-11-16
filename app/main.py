@@ -290,7 +290,7 @@ def _intro(job: jobs.Job, device: str) -> str:
     meta = next((t for t in jobs.templates() if t["id"] == job.template), {})
     fmt = {"docx": "Word document (.docx, editable)", "pdf": "PDF"}.get(job.format, job.format)
     return (f"New document. Kind: {meta.get('name', job.template)} (its files are in the current folder; read "
-            f"GUIDE.md first). Output he chose: {fmt}. Today is {time.strftime('%-d %b %Y')}. "
+            f"GUIDE.md first). Output he chose: {fmt}. Today is {time.strftime('%A, %-d %B %Y')}. "
             f"He is using {DEVICE.get(device, 'a phone or tablet')}.")
 
 

@@ -23,6 +23,10 @@ def _load_dotenv():
 
 _load_dotenv()
 
+# Everything happens in Indian time (dates on documents, "today", file times), whatever the machine says.
+os.environ["TZ"] = "Asia/Kolkata"
+__import__("time").tzset()
+
 TEMPLATES = ROOT / "templates"
 FONTS = TEMPLATES / "fonts"
 ASSETS = ROOT / "assets"

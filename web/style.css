@@ -368,3 +368,11 @@ body.marking-full #top { display: none !important; }
 @keyframes pill-in { from { opacity: 0; transform: translate(-50%, 10px); } }
 @keyframes pill-pulse { 50% { box-shadow: 0 6px 20px rgba(0,0,0,.12), 0 0 0 7px rgba(28,28,26,.12); } }
 @media (prefers-reduced-motion: reduce) { .waiting.ask { animation: none; } }
+
+/* date / time questions */
+.pick-box { position: relative; display: flex; align-items: center; gap: .7rem; margin-top: .7rem; padding: .85rem 1rem; border: 1px solid #d6d4cd; border-radius: 14px; background: var(--white); cursor: pointer; }
+.pick-box > svg { color: var(--accent); width: 24px; height: 24px; }
+.pick-box .picked { margin: 0; font-weight: 600; font-size: 1.02rem; }
+.pick-box .picked.empty { color: var(--muted); font-weight: 500; }
+.pick-box .picker-in { position: absolute; inset: 0; opacity: 0; width: 100%; height: 100%; border: 0; cursor: pointer; }
+.q .chips + .pick-box { margin-top: .6rem; }

@@ -119,6 +119,10 @@ class AgentSession:
             "type": "object",
             "properties": {
                 "question": {"type": "string", "description": "Short, plain question."},
+                "type": {"type": "string", "enum": ["choice", "date", "time"],
+                         "description": "choice (default): tap an option. date: he picks a day on a calendar; "
+                         "the answer comes as e.g. 'Thursday, 19 November 2026'. time: a clock, answer like '3:00 PM'. "
+                         "For date/time, options are optional quick picks shown above the picker."},
                 "why": {"type": "string", "description": "Optional one short line under the question: why it matters."},
                 "options": {"type": "array", "items": {"type": "string"}, "maxItems": 8,
                             "description": "Tap-able answers (short). Leave empty only if he must type."},
@@ -152,7 +156,9 @@ class AgentSession:
                 return _text("Give at least one question.", True)
             for q in qs:
                 q["options"] = [str(o) for o in (q.get("options") or [])]
-                if not q["options"]:
+                if q.get("type") in ("date", "time"):
+                    q["other"] = False
+                elif not q["options"]:
                     q["other"] = True
             card = {"questions": qs, "intro": args.get("intro") or ""}
             job = self.job
@@ -406,6 +412,7 @@ class AgentSession:
                 "MCP_TOOL_TIMEOUT": str(7 * 24 * 3600 * 1000),  # a question card may wait for hours
                 "PATH": bin_dir + os.pathsep + os.environ.get("PATH", ""),
                 "NEXTCLOUD_APP_PASSWORD": "",  # Nextcloud goes through our tools
+                "TZ": "Asia/Kolkata",
             },
             stderr=lambda line: log.debug("cli: %s", line),
         )

@@ -51,7 +51,7 @@ function show(id, title) {
   closeMenus();
 }
 function fmtDate(t) {
-  return new Date(t * 1000).toLocaleDateString("en-IN", { day: "numeric", month: "short" });
+  return new Date(t * 1000).toLocaleDateString("en-IN", { day: "numeric", month: "short", timeZone: "Asia/Kolkata" });
 }
 function row({ ico, img, title, sub, right, onClick, cls }) {
   const li = el("li"), b = el("button", "row" + (cls ? " " + cls : ""));
@@ -400,6 +400,7 @@ function handleEvent(ev, replay) {
   }
   scrollChat();
   renderPill();
+  syncSend();
 }
 
 // ---------------- question cards ----------------
@@ -447,6 +448,7 @@ function renderStep(wrap) {
   }
   body.append(el("b", "q-text", q.question));
   if (q.why) body.append(el("p", "why", q.why));
+  if (q.type === "date" || q.type === "time") return renderPicker(wrap, q, i, body);
   const opts = [...(q.options || [])];
   if (q.other && opts.length) opts.push(OTHER);
   const chips = el("div", "chips");
@@ -513,6 +515,63 @@ function renderStep(wrap) {
   nudgeLater(wrap);
 }
 
+// A calendar / clock question: he picks, never types. The answer carries the weekday, so the
+// document's "Thursday, 19 November" is always right.
+const fmtDay = (v) => { const [y, m, d] = v.split("-").map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "long", year: "numeric" }); };
+const fmtClock = (v) => { const [h, m] = v.split(":").map(Number);
+  return `${(h % 12) || 12}:${String(m).padStart(2, "0")} ${h < 12 ? "AM" : "PM"}`; };
+function renderPicker(wrap, q, i, body) {
+  const qs = wrap.card.questions, last = i === qs.length - 1;
+  wrap.raw = wrap.raw || [];
+  const isDate = q.type === "date";
+  const show = el("p", "picked", "");
+  const input = el("input", "picker-in"); input.type = isDate ? "date" : "time";
+  input.value = wrap.raw[i] || "";
+  const nextBtn = el("button", "btn primary small", last ? "Send" : "Next"); nextBtn.type = "button";
+  const update = () => {
+    const v = input.value;
+    wrap.raw[i] = v;
+    wrap.answers[i] = v ? (isDate ? fmtDay(v) : fmtClock(v)) : (wrap.answers[i] && !wrap.raw[i] ? wrap.answers[i] : null);
+    show.textContent = wrap.answers[i] || (isDate ? "Tap to choose a date" : "Tap to choose a time");
+    show.classList.toggle("empty", !wrap.answers[i]);
+    nextBtn.disabled = !wrap.answers[i];
+    for (const c of chips.children) c.classList.toggle("on", c.textContent === wrap.answers[i]);
+  };
+  const chips = el("div", "chips");
+  (q.options || []).forEach((o, k) => {
+    const c = el("button", "chip", o); c.type = "button";
+    if (!REDUCED) c.style.animationDelay = `${k * 60}ms`;
+    c.onclick = async () => {
+      if (wrap.classList.contains("done") || wrap.sending) return;
+      input.value = ""; wrap.raw[i] = ""; wrap.answers[i] = o; update();
+      c.classList.add("tick"); await sleep(REDUCED ? 120 : 380); next();
+    };
+    chips.append(c);
+  });
+  const box = el("label", "pick-box");
+  box.append(icon(isDate ? "cal" : "clock"), show, input);
+  input.oninput = input.onchange = update;
+  box.onclick = () => { try { input.showPicker(); } catch { input.focus(); } };
+  if (chips.children.length) body.append(chips);
+  body.append(box);
+  const nav = el("div", "q-nav");
+  const back = el("button", "link", "Back"); back.type = "button";
+  back.onclick = () => { wrap.step--; wrap.render(); };
+  if (i > 0) nav.append(back);
+  nav.append(el("span", "grow"), nextBtn);
+  body.append(nav);
+  nextBtn.onclick = () => next();
+  update();
+  function next() {
+    if (!wrap.answers[i]) return;
+    if (wrap.step < qs.length - 1) { wrap.step++; wrap.render(); if (!REDUCED) wrap.querySelector(".q-body").classList.add("slide"); }
+    else sendCard(wrap);
+  }
+  if (q.point_at) pointAt(q.point_at, q.on || "new");
+  nudgeLater(wrap);
+}
+
 function nudgeLater(wrap) {
   clearTimeout(wrap.nudge);
   wrap.nudge = setTimeout(() => {
@@ -535,6 +594,7 @@ async function sendCard(wrap, message = "") {
 
 function cardDone(wrap, answers, message) {
   if (!wrap || wrap.classList.contains("done")) return;
+  setTimeout(syncSend);
   clearTimeout(wrap.nudge); clearPointer();
   wrap.classList.add("done"); wrap.classList.remove("nudge");
   const body = wrap.querySelector(".q-body"); body.innerHTML = "";
@@ -578,7 +638,9 @@ async function sendText(text) {
   const fd = new FormData(); fd.append("text", text);
   await sendMessage(fd);
 }
-function setBusy(b) { busy = b; $("#send").disabled = b; }
+function setBusy(b) { busy = b; syncSend(); }
+// While a question card is open he can always write: the message goes along with his answers.
+function syncSend() { $("#send").disabled = busy && !openCard(); }
 
 // tabs (phone)
 function setTab(t) {
@@ -701,25 +763,44 @@ $("#zoom-level").onclick = () => zoomAt(1);
   const desk = $("#desk");
   const fingers = (list) => [...list].filter((t) => t.touchType !== "stylus"); // the pen draws, it never zooms
   const dist = (t) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
-  let pinch = null, pan = null;
+  // Reading: one finger scrolls natively; two fingers pinch (touch events).
+  let pinch = null;
   desk.addEventListener("touchstart", (e) => {
+    if (marking) return;
     const t = fingers(e.touches);
-    if (t.length === 2) { pinch = { d: dist(t), z: zoom }; pan = null; }
-    else if (t.length === 1 && marking) pan = { x: t[0].clientX, y: t[0].clientY };
+    if (t.length === 2) pinch = { d: dist(t), z: zoom };
   }, { passive: true });
   desk.addEventListener("touchmove", (e) => {
+    if (marking) { e.preventDefault(); return; }  // marking: moving is done by the pointer code below
     const t = fingers(e.touches);
     if (pinch && t.length === 2) {
       e.preventDefault();
       zoomAt(pinch.z * dist(t) / pinch.d, (t[0].clientX + t[1].clientX) / 2, (t[0].clientY + t[1].clientY) / 2);
-    } else if (pan && t.length === 1) {  // while marking one finger moves the page (no browser scrolling there)
-      e.preventDefault();
-      desk.scrollBy(pan.x - t[0].clientX, pan.y - t[0].clientY);
-      pan = { x: t[0].clientX, y: t[0].clientY };
     }
   }, { passive: false });
-  const end = (e) => { const n = fingers(e.touches).length; if (n < 2) pinch = null; if (!n) pan = null; };
+  const end = (e) => { if (fingers(e.touches).length < 2) pinch = null; };
   desk.addEventListener("touchend", end); desk.addEventListener("touchcancel", end);
+  // Marking: pointer events say exactly what touched the screen. Only fingers (pointerType
+  // "touch") move or zoom the page; the pen never does — it only writes (see startMarking).
+  const pts = new Map();
+  let mpinch = null;
+  const two = () => [...pts.values()].slice(0, 2);
+  desk.addEventListener("pointerdown", (e) => {
+    if (!marking || e.pointerType !== "touch") return;
+    pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pts.size === 2) { const [a, b] = two(); mpinch = { d: Math.hypot(a.x - b.x, a.y - b.y), z: zoom }; }
+  });
+  desk.addEventListener("pointermove", (e) => {
+    if (!marking || e.pointerType !== "touch" || !pts.has(e.pointerId)) return;
+    const prev = pts.get(e.pointerId);
+    pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pts.size >= 2 && mpinch) {
+      const [a, b] = two();
+      zoomAt(mpinch.z * Math.hypot(a.x - b.x, a.y - b.y) / mpinch.d, (a.x + b.x) / 2, (a.y + b.y) / 2);
+    } else if (pts.size === 1) desk.scrollBy(prev.x - e.clientX, prev.y - e.clientY);
+  });
+  const lift = (e) => { pts.delete(e.pointerId); if (pts.size < 2) mpinch = null; };
+  desk.addEventListener("pointerup", lift); desk.addEventListener("pointercancel", lift);
   desk.addEventListener("wheel", (e) => {  // laptop trackpad pinch arrives as ctrl + wheel
     if (!e.ctrlKey) return;
     e.preventDefault();
@@ -940,21 +1021,30 @@ function startMarking() {
     const ink = document.createElement("canvas"); ink.className = "ink";
     p.box.append(ink); marking.layers[n] = ink;
     fitInk(n);
-    let cur = null;
+    let cur = null, erasing = false;
+    // The pen's side button (barrel button, or the eraser end) turns it into an eraser.
+    const eraserOn = (e) => (e.buttons & 2) || (e.buttons & 32) || e.button === 2 || e.button === 5;
     ink.addEventListener("pointerdown", (e) => {
       const penLike = e.pointerType === "pen" || (e.pointerType === "mouse" && new URLSearchParams(location.search).has("pen"));
-      if (!penLike) return;  // fingers move / zoom the page (see the touch handlers on the desk)
-      e.preventDefault(); ink.setPointerCapture(e.pointerId);
+      if (!penLike) return;  // fingers move / zoom the page (pointer code on the desk)
+      e.preventDefault(); e.stopPropagation(); try { ink.setPointerCapture(e.pointerId); } catch { }
+      erasing = eraserOn(e);
+      if (erasing) { cur = null; return eraseAt(n, e); }
       cur = [];
       if (!marking.strokes.has(n)) marking.strokes.set(n, []);
       marking.strokes.get(n).push(cur); marking.order.push(n);
       addPoint(e);
     });
     ink.addEventListener("pointermove", (e) => {
+      if (e.pointerType === "touch") return;
+      if (erasing) { e.preventDefault(); return eraseAt(n, e); }
       if (!cur) return;
-      for (const ce of e.getCoalescedEvents ? e.getCoalescedEvents() : [e]) addPoint(ce);
+      e.preventDefault();
+      const evs = e.getCoalescedEvents?.();
+      for (const ce of evs?.length ? evs : [e]) addPoint(ce);
     });
-    const end = () => { cur = null; };
+    ink.addEventListener("contextmenu", (e) => e.preventDefault());  // side button must not open a menu
+    const end = () => { cur = null; erasing = false; };
     ink.addEventListener("pointerup", end); ink.addEventListener("pointercancel", end);
     function addPoint(e) {
       const rr = ink.getBoundingClientRect();
@@ -965,6 +1055,19 @@ function startMarking() {
     }
   });
   sharpenSoon();
+}
+function eraseAt(n, e) {  // remove any of his lines passing near the pen tip
+  const ink = marking.layers[n], r = ink.getBoundingClientRect();
+  const px = e.clientX - r.left, py = e.clientY - r.top, R = 14;  // screen pixels
+  const near = (a, b) => {  // distance from the pen tip to the segment a–b, in screen pixels
+    const ax = a.x * r.width, ay = a.y * r.height, bx = b.x * r.width, by = b.y * r.height;
+    const dx = bx - ax, dy = by - ay, L = dx * dx + dy * dy;
+    const t = L ? Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / L)) : 0;
+    return Math.hypot(px - (ax + t * dx), py - (ay + t * dy)) < R;
+  };
+  const list = marking.strokes.get(n) || [];
+  const keep = list.filter((s) => !(s.length === 1 ? near(s[0], s[0]) : s.some((p, i) => i && near(s[i - 1], p))));
+  if (keep.length !== list.length) { marking.strokes.set(n, keep); redrawInk(n); }
 }
 function fitInk(n) {  // ink canvas at the page's on-screen size (sharp after zooming)
   const ink = marking.layers[n]; if (!ink) return;
