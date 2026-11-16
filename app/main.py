@@ -12,7 +12,7 @@ from urllib.parse import quote
 
 import httpx
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import (FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse, Response,
+from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response,
                                StreamingResponse)
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageOps
@@ -88,26 +88,59 @@ async def no_edge_cache(request: Request, call_next):
     if request.url.path.startswith("/static/") or request.url.path in ("/", "/sw.js", "/manifest.webmanifest"):
         resp.headers["Cache-Control"] = "no-cache"
     return resp
-app.mount("/static", StaticFiles(directory=config.WEB), name="static")
-
-
-# ---- pages ------------------------------------------------------------------
-def _busted_index() -> str:
-    """index.html with ?v=<content hash> on every /static/ file it uses (JS, CSS, icons), so a deploy
-    is never hidden behind a cached copy in the installed app or Cloudflare (its browser-cache TTL
-    overrides our no-cache). index.html itself is always revalidated."""
+# ---- pages & app files ---------------------------------------------------------
+# Every deploy must reach the installed app (PWA) without reinstalling it:
+# - index.html is never cached, and names each file it uses with ?v=<content hash>;
+# - app.js / style.css get the same treatment for files *they* reference;
+# - the page carries a build id; the app compares it with /api/version when it comes back to the
+#   foreground (or every few minutes) and reloads itself at a safe moment when it changed.
+def _build() -> tuple[str, dict, str]:
     import re
 
-    def bust(m):
-        f = config.WEB / m.group(1)
-        if not f.is_file():
-            return m.group(0)
-        return f"/static/{m.group(1)}?v={hashlib.sha256(f.read_bytes()).hexdigest()[:10]}"
+    files = {p.name: p.read_bytes() for p in config.WEB.iterdir() if p.is_file()}
+    h = lambda b: hashlib.sha256(b).hexdigest()[:10]  # noqa: E731
+    ver = {n: h(b) for n, b in files.items()}
 
-    return re.sub(r"/static/([\w.-]+)(?![\w.?-])", bust, (config.WEB / "index.html").read_text())
+    def bust(text: str) -> str:
+        return re.sub(r"/static/([\w.-]+)(?![\w.?-])",
+                      lambda m: f"/static/{m.group(1)}?v={ver[m.group(1)]}" if m.group(1) in ver else m.group(0), text)
+
+    texts = {}
+    for name in ("app.js", "style.css"):
+        texts[name] = bust(files[name].decode())
+        ver[name] = h(texts[name].encode())
+    build = h("".join(f"{k}:{v}" for k, v in sorted(ver.items())).encode())
+    index = bust(files["index.html"].decode()).replace(
+        "</head>", f'<meta name="build" content="{build}">\n</head>', 1)
+    return index, texts, build
 
 
-INDEX_HTML = _busted_index()
+INDEX_HTML, BUSTED, BUILD = _build()
+
+
+@app.get("/static/{name}.{ext}", include_in_schema=False)
+async def busted_asset(name: str, ext: str):
+    """app.js / style.css with their own references fingerprinted; anything else falls through."""
+    text = BUSTED.get(f"{name}.{ext}")
+    if text is None:
+        return FileResponse(_static_file(f"{name}.{ext}"))
+    kind = "text/javascript" if ext == "js" else "text/css"
+    return Response(text, media_type=f"{kind}; charset=utf-8", headers={"Cache-Control": "no-cache"})
+
+
+def _static_file(name: str):
+    f = (config.WEB / name).resolve()
+    if not f.is_relative_to(config.WEB.resolve()) or not f.is_file():
+        raise HTTPException(404)
+    return f
+
+
+@app.get("/api/version")
+async def api_version():
+    return JSONResponse({"build": BUILD}, headers={"Cache-Control": "no-store"})
+
+
+app.mount("/static", StaticFiles(directory=config.WEB), name="static")
 
 
 @app.get("/")

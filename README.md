@@ -43,6 +43,15 @@ cp .env.example .env   # fill in
 ```
 Needs `typst`, `pdfinfo`/`pdftotext` (poppler) and a logged-in `claude` CLI.
 
+## Updating (after the first install)
+```bash
+git push && ./deploy            # pull on pi5, rebuild, restart (./deploy --bump also bumps HOMELAB)
+```
+Installed apps update themselves; nobody reinstalls anything. index.html is never cached and names
+every file with `?v=<content hash>` (also inside app.js/style.css), and the page carries a build id:
+when he brings the app to the front (or every 5 min) it checks `/api/version` and reloads into the
+new version at a safe moment (nothing typed, no half-answered card, no pen marks pending).
+
 ## Deploy (Docker)
 ```bash
 cp .env.example .env   # fill in

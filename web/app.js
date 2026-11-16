@@ -932,5 +932,33 @@ $("#sync").onclick = (e) => {
   sendText(job.save_state === "changed" ? "Please save the changes in Nextcloud." : "Please save this in my Nextcloud.");
 };
 
+// ---------------- updates: a new deploy reaches the installed app by itself ----------------
+// The page knows its build id; when the server has a newer one, reload at a moment when nothing
+// he is doing would be lost (he stays on the same screen: the address keeps the document).
+const BUILD = document.querySelector('meta[name="build"]')?.content;
+let updateReady = false;
+function safeToReload() {
+  if (marking || !$("#picker").hidden) return false;
+  const a = attach;
+  if (a.content.files.length || a.content.nc.length || a.chat.files.length || a.chat.nc.length) return false;
+  if ($$("textarea").some((t) => t.value.trim())) return false;
+  const card = openCard();
+  if (card && (card.step > 0 || card.answers.some((x) => (Array.isArray(x) ? x.length : x != null)))) return false;
+  return true;
+}
+function maybeReload() { if (updateReady && safeToReload()) location.reload(); }
+async function checkUpdate() {
+  if (!BUILD || updateReady) return maybeReload();
+  try {
+    const r = await fetch("/api/version", { cache: "no-store" });
+    if (r.ok && (await r.json()).build !== BUILD) updateReady = true;
+  } catch { }
+  maybeReload();
+}
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") checkUpdate(); });
+window.addEventListener("focus", checkUpdate);
+window.addEventListener("hashchange", maybeReload);
+setInterval(checkUpdate, 5 * 60 * 1000);
+
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
 route();
