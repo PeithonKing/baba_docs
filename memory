@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# What the assistant has learned about him (its own private notes, folded into a short summary).
+#
+#   ./memory                 show the summary and the newest notes
+#   ./memory all             also show notes already folded into the summary
+#   ./memory edit            fix the summary by hand (opens $EDITOR)
+#   ./memory reflect         write notes now for documents quiet for a day
+#   ./memory reflect-now     ... for every document with new activity, without waiting
+#   ./memory reset           forget everything (old files are kept in data/memory/archive)
+#
+# Runs on the server over ssh. Env overrides: BABA_HOST (default pi5), BABA_DIR (default HOMELAB/baba_docs)
+set -euo pipefail
+
+HOST=${BABA_HOST:-pi5}
+DIR=${BABA_DIR:-HOMELAB/baba_docs}
+here() { [ "$(hostname -s)" = "$HOST" ]; }
+
+manage() {
+  if here; then (cd ~/"$DIR" && docker compose exec baba-docs python manage.py "$@")
+  else ssh -t -o LogLevel=ERROR "$HOST" "bash -lc 'cd $DIR && docker compose exec baba-docs python manage.py $*'"; fi
+}
+
+case "${1:-show}" in
+  show)         manage memory-show ;;
+  all)          manage memory-show --all ;;
+  edit)         if here; then "${EDITOR:-nano}" ~/"$DIR"/data/memory/summary.md
+                else ssh -t -o LogLevel=ERROR "$HOST" "\${EDITOR:-nano} $DIR/data/memory/summary.md"; fi ;;
+  reflect)      manage memory-reflect ;;
+  reflect-now)  manage memory-reflect --now ;;
+  reset)        manage memory-reset ;;
+  -h|--help|help) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *)            echo "Unknown command: $1 (try ./memory help)" >&2; exit 1 ;;
+esac

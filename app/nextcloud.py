@@ -1,31 +1,31 @@
-"""Keep each document's latest version in his Nextcloud (WebDAV). Runs on the server, not the agent.
+"""His Nextcloud, over WebDAV. Used by the agent's nc_* tools, the file picker and the signature.
 
-Layout: <NEXTCLOUD_FOLDER>/<template's nextcloud_folder>/<title>_<YYYY-MM>.<pdf|docx>
-e.g.    School Documents/Notices/Notice – Staff meeting_2026-11.pdf
+Paths are relative to his files root, e.g. "School Documents/Letterhead/Notice_2026-11.pdf".
 
-- Folders are created as needed (MKCOL).
-- Each sync of the same document overwrites its own file (Nextcloud keeps old versions).
-- A different document with the same name gets "<title>_<YYYY-MM> (2).pdf".
-- Before overwriting, the file's ETag in Nextcloud is compared with the one we recorded
-  after our last write. If it changed, someone edited it there: we stop and report a
-  conflict instead of overwriting their work.
+Nothing is saved automatically: the agent decides when and where to save (following the
+guidelines in its prompt). The one hard rule kept in code: before replacing a file, its ETag
+is compared with the one we last saw. If it changed, someone edited it in Nextcloud, and the
+save stops with a Conflict so the agent can ask him what to do.
 """
 import html
-import json
-import subprocess
 import time
-from urllib.parse import quote
+import xml.etree.ElementTree as ET
+from email.utils import parsedate_to_datetime
+from urllib.parse import quote, unquote
 
 import httpx
 
 from . import config
-from .jobs import Job
 
 BAD = '\\/:*?"<>|#%\n\r\t'
+NS = {"d": "DAV:", "oc": "http://owncloud.org/ns"}
+PROPS = ('<?xml version="1.0"?><d:propfind xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns"><d:prop>'
+         "<d:getetag/><d:getlastmodified/><d:getcontentlength/><d:getcontenttype/><d:resourcetype/>"
+         "<oc:fileid/></d:prop></d:propfind>")
 
 
 class Conflict(Exception):
-    """The file in Nextcloud was changed by someone else since our last sync."""
+    """The file in Nextcloud was changed by someone else since we last saw it."""
 
     def __init__(self, path: str, remote: dict):
         super().__init__(path)
@@ -38,128 +38,172 @@ def configured() -> bool:
 
 def _client(transport: httpx.AsyncBaseTransport | None = None) -> httpx.AsyncClient:
     return httpx.AsyncClient(
-        auth=(config.NEXTCLOUD_USER, config.NEXTCLOUD_APP_PASSWORD), timeout=60, transport=transport
+        auth=(config.NEXTCLOUD_USER, config.NEXTCLOUD_APP_PASSWORD), timeout=120, transport=transport,
+        headers={"User-Agent": "baba-docs"},
     )
+
+
+def _root() -> str:
+    return f"/remote.php/dav/files/{quote(config.NEXTCLOUD_USER)}/"
 
 
 def _dav(path: str) -> str:
     """WebDAV URL for a path inside his files ("a/b c.pdf" → .../files/asish/a/b%20c.pdf)."""
-    base = config.NEXTCLOUD_URL.rstrip("/")
-    return f"{base}/remote.php/dav/files/{quote(config.NEXTCLOUD_USER)}/" + quote(path, safe="/")
+    return config.NEXTCLOUD_URL.rstrip("/") + _root() + quote(norm(path), safe="/")
 
 
-def _clean(name: str) -> str:
+def norm(path: str) -> str:
+    parts = [p for p in (path or "").replace("\\", "/").split("/") if p not in ("", ".")]
+    if ".." in parts:
+        raise ValueError("bad path")
+    return "/".join(parts)
+
+
+def clean_name(name: str) -> str:
     s = "".join(" " if c in BAD else c for c in name).strip(" .")
     return " ".join(s.split())[:120] or "Document"
 
 
-def _folder_for(job: Job) -> str:
-    meta = json.loads((config.TEMPLATES / job.template / "meta.json").read_text())
-    return "/".join(p for p in (config.NEXTCLOUD_FOLDER, meta.get("nextcloud_folder") or "Other") if p)
+def web_link(fileid: str | None, path: str | None = None) -> str:
+    base = (config.NEXTCLOUD_PUBLIC_URL or config.NEXTCLOUD_URL).rstrip("/")
+    if fileid:
+        return f"{base}/f/{fileid}"
+    return f"{base}/apps/files/?dir=/" + quote(norm(path or "").rsplit("/", 1)[0])
 
 
-def _stem_for(job: Job) -> str:
-    return f"{_clean(job.title)}_{time.strftime('%Y-%m', time.localtime(job.created))}"
-
-
-async def _exists(c: httpx.AsyncClient, path: str) -> bool:
-    r = await c.request("PROPFIND", _dav(path), headers={"Depth": "0"})
-    return r.status_code == 207
-
-
-async def _mkdirs(c: httpx.AsyncClient, folder: str):
-    built = ""
-    for part in folder.split("/"):
-        built = f"{built}/{part}" if built else part
-        r = await c.request("MKCOL", _dav(built))
-        if r.status_code not in (201, 405):  # 405 = already exists
-            r.raise_for_status()
+def _parse(xml_text: str) -> list[dict]:
+    out = []
+    root_href = _root()
+    for r in ET.fromstring(xml_text).findall("d:response", NS):
+        href = unquote(r.findtext("d:href", "", NS))
+        rel = href.split(root_href, 1)[-1] if root_href in href else href
+        p = r.find("d:propstat/d:prop", NS)
+        if p is None:
+            continue
+        is_dir = p.find("d:resourcetype/d:collection", NS) is not None
+        mod = p.findtext("d:getlastmodified", None, NS)
+        try:
+            mod = parsedate_to_datetime(mod).timestamp() if mod else None
+        except (TypeError, ValueError):
+            mod = None
+        rel = rel.strip("/")
+        out.append({
+            "path": rel,
+            "name": rel.rsplit("/", 1)[-1],
+            "dir": is_dir,
+            "size": int(p.findtext("d:getcontentlength", "0", NS) or 0),
+            "type": p.findtext("d:getcontenttype", "", NS) or ("folder" if is_dir else ""),
+            "modified": mod,
+            "etag": html.unescape(p.findtext("d:getetag", "", NS) or "").strip('"'),
+            "fileid": p.findtext("oc:fileid", None, NS),
+        })
+    return out
 
 
 async def stat(path: str, transport=None) -> dict | None:
-    """etag + last-modified of a file in his Nextcloud, or None if it is gone."""
-    body = ('<?xml version="1.0"?><d:propfind xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">'
-            "<d:prop><d:getetag/><d:getlastmodified/><oc:fileid/></d:prop></d:propfind>")
+    """Info about one file or folder, or None if it does not exist."""
     async with _client(transport) as c:
-        r = await c.request("PROPFIND", _dav(path), headers={"Depth": "0"}, content=body)
+        r = await c.request("PROPFIND", _dav(path), headers={"Depth": "0"}, content=PROPS)
     if r.status_code != 207:
         return None
-    t = r.text
-
-    def tag(name):
-        i = t.find(name + ">")
-        return t[i + len(name) + 1: t.find("<", i + len(name) + 1)] if i >= 0 else None
-
-    etag = html.unescape(tag("getetag") or "").strip('"')
-    return {"etag": etag, "modified": tag("getlastmodified"), "fileid": tag("fileid")}
+    items = _parse(r.text)
+    return items[0] if items else None
 
 
-async def push(job: Job, force: bool = False, transport=None) -> dict:
-    """Upload the document's current file. Raises Conflict if it was edited in Nextcloud
-    since our last write (unless force=True). Returns the new `exported` record."""
-    ext = "docx" if job.format == "docx" else "pdf"
-    src = job.out / f"document.{ext}"
-    if not src.exists():
-        raise FileNotFoundError(src)
-
-    prev = job.exported or {}
-    path = None
-    if prev.get("path", "").endswith("." + ext):
-        remote = await stat(prev["path"], transport)
-        if remote is not None:
-            if not force and prev.get("etag") and remote["etag"] != prev["etag"]:
-                raise Conflict(prev["path"], remote)
-            path = prev["path"]  # overwrite our own file
-        # remote is None → it was deleted or moved in Nextcloud; save it afresh below
-
+async def listdir(path: str = "", transport=None) -> list[dict]:
+    """Folder contents: folders first, then files newest first."""
     async with _client(transport) as c:
-        if path is None:
-            folder = _folder_for(job)
-            await _mkdirs(c, folder)
-            stem = _stem_for(job)
-            path, n = f"{folder}/{stem}.{ext}", 1
-            while await _exists(c, path):
-                n += 1
-                path = f"{folder}/{stem} ({n}).{ext}"
-        else:
-            await _mkdirs(c, path.rsplit("/", 1)[0])
-        r = await c.put(_dav(path), content=src.read_bytes())
-        r.raise_for_status()
-    info = await stat(path, transport) or {}
-    return {"path": path, "ext": ext, "at": time.time(), **info}
+        r = await c.request("PROPFIND", _dav(path), headers={"Depth": "1"}, content=PROPS)
+    if r.status_code == 404:
+        raise FileNotFoundError(path)
+    r.raise_for_status()
+    me = norm(path)
+    items = [i for i in _parse(r.text) if i["path"] != me]
+    return sorted(items, key=lambda i: (not i["dir"], i["name"].lower() if i["dir"] else -(i["modified"] or 0)))
 
 
-async def pull_copy(job: Job, transport=None) -> tuple[str, dict]:
-    """Download the Nextcloud version into the job folder as nextcloud_copy.<ext>, plus a
-    plain-text extraction nextcloud_copy.txt the agent can read. Returns (txt name, remote stat)."""
-    prev = job.exported or {}
-    path, ext = prev["path"], prev.get("ext", "pdf")
+async def search(term: str, transport=None, limit: int = 40) -> list[dict]:
+    """Find files by name anywhere in his Nextcloud (WebDAV SEARCH)."""
+    user = config.NEXTCLOUD_USER
+    like = "%" + term.replace("%", "").replace("_", "") + "%"
+    body = f"""<?xml version="1.0"?><d:searchrequest xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">
+<d:basicsearch><d:select><d:prop><d:getetag/><d:getlastmodified/><d:getcontentlength/><d:getcontenttype/>
+<d:resourcetype/><oc:fileid/></d:prop></d:select>
+<d:from><d:scope><d:href>/files/{html.escape(user)}</d:href><d:depth>infinity</d:depth></d:scope></d:from>
+<d:where><d:like><d:prop><d:displayname/></d:prop><d:literal>{html.escape(like)}</d:literal></d:like></d:where>
+<d:orderby><d:order><d:prop><d:getlastmodified/></d:prop><d:descending/></d:order></d:orderby>
+<d:limit><d:nresults>{limit}</d:nresults></d:limit></d:basicsearch></d:searchrequest>"""
+    async with _client(transport) as c:
+        r = await c.request("SEARCH", config.NEXTCLOUD_URL.rstrip("/") + "/remote.php/dav/",
+                            headers={"Content-Type": "text/xml"}, content=body)
+    r.raise_for_status()
+    return [i for i in _parse(r.text) if not i["path"].startswith(config.NEXTCLOUD_SOURCES)]
+
+
+async def download(path: str, transport=None) -> tuple[bytes, dict]:
     async with _client(transport) as c:
         r = await c.get(_dav(path))
+        if r.status_code == 404:
+            raise FileNotFoundError(path)
         r.raise_for_status()
-    raw = job.work / f"nextcloud_copy.{ext}"
-    raw.write_bytes(r.content)
-    txt = job.work / "nextcloud_copy.txt"
-    txt.write_text(_extract_text(raw))
-    remote = await stat(path, transport) or {}
-    return txt.name, remote
+    return r.content, (await stat(path, transport) or {})
 
 
-def _extract_text(f) -> str:
-    if f.suffix == ".docx":
-        from docx import Document
+async def mkdirs(folder: str, transport=None):
+    built = ""
+    async with _client(transport) as c:
+        for part in norm(folder).split("/"):
+            if not part:
+                continue
+            built = f"{built}/{part}" if built else part
+            r = await c.request("MKCOL", _dav(built))
+            if r.status_code not in (201, 405):  # 405 = already exists
+                r.raise_for_status()
 
-        d = Document(str(f))
-        lines = [p.text for p in d.paragraphs]
-        for t in d.tables:
-            lines.append("")
-            for row in t.rows:
-                lines.append(" | ".join(c.text.strip() for c in row.cells))
-        return "\n".join(lines)
-    try:
-        return subprocess.run(["pdftotext", "-layout", str(f), "-"], capture_output=True, text=True, timeout=60).stdout
-    except (OSError, subprocess.TimeoutExpired):
-        return "(could not read the PDF text)"
+
+async def upload(path: str, data: bytes, *, expect_etag: str | None = None, force: bool = False,
+                 keep_both: bool = False, transport=None) -> dict:
+    """Write a file. If it exists:
+      keep_both  → save as "name (2).ext" instead
+      expect_etag given and different (someone edited it) → Conflict, unless force
+    Returns the new file's info (path, etag, fileid...)."""
+    path = norm(path)
+    folder, _, name = path.rpartition("/")
+    remote = await stat(path, transport)
+    if remote and keep_both:
+        stem, dot, ext = name.rpartition(".")
+        stem, ext = (stem, "." + ext) if dot else (name, "")
+        n = 2
+        while remote:
+            path = f"{folder}/{stem} ({n}){ext}".lstrip("/")
+            remote = await stat(path, transport)
+            n += 1
+    elif remote and expect_etag and remote["etag"] != expect_etag and not force:
+        raise Conflict(path, remote)
+    if folder:
+        await mkdirs(folder, transport)
+    async with _client(transport) as c:
+        r = await c.put(_dav(path), content=data)
+        r.raise_for_status()
+    return await stat(path, transport) or {"path": path}
+
+
+async def move(src: str, dst: str, transport=None) -> dict:
+    dst = norm(dst)
+    if dst.rpartition("/")[0]:
+        await mkdirs(dst.rpartition("/")[0], transport)
+    async with _client(transport) as c:
+        r = await c.request("MOVE", _dav(src), headers={"Destination": _dav(dst), "Overwrite": "F"})
+        r.raise_for_status()
+    return await stat(dst, transport) or {"path": dst}
+
+
+async def delete(path: str, transport=None):
+    """Moves it to his Nextcloud trash bin (Nextcloud keeps deleted files for a while)."""
+    async with _client(transport) as c:
+        r = await c.request("DELETE", _dav(path))
+        if r.status_code != 404:
+            r.raise_for_status()
 
 
 async def pull_signature(transport=None) -> str:
@@ -179,14 +223,7 @@ async def pull_signature(transport=None) -> str:
         return "missing"
     if cache.exists() and tag_file.exists() and tag_file.read_text() == remote["etag"]:
         return "unchanged"
-    async with _client(transport) as c:
-        r = await c.get(_dav(path))
-        r.raise_for_status()
-    raw = r.content
-    if not raw.startswith((b"\x89PNG", b"\xff\xd8")):  # base64 text (images are blocked for his group)
-        import base64
-
-        raw = base64.b64decode(b"".join(raw.split()))
+    raw, _ = await download(path, transport)
     img = ImageOps.exif_transpose(Image.open(BytesIO(raw))).convert("RGBA")
     img.thumbnail((1600, 1600))
     tmp = cache.with_suffix(".tmp.png")
@@ -194,3 +231,19 @@ async def pull_signature(transport=None) -> str:
     tmp.replace(cache)
     tag_file.write_text(remote["etag"])
     return "updated"
+
+
+async def migrate_folders(transport=None) -> list[str]:
+    """One-time renames of his folders (done once per server, see main.py). Returns what moved."""
+    moved = []
+    base = config.NEXTCLOUD_FOLDER
+    for old, new in [("Notices", "Letterhead")]:
+        src, dst = f"{base}/{old}", f"{base}/{new}"
+        if await stat(src, transport) and not await stat(dst, transport):
+            await move(src, dst, transport)
+            moved.append(f"{src} → {dst}")
+    return moved
+
+
+def stamp() -> str:
+    return time.strftime("%Y-%m")

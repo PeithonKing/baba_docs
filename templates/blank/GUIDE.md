@@ -2,7 +2,7 @@
 
 For forms, lists, timetables, routines, notes — anything that is not a notice/letter or a question paper.
 If it is really an official notice or letter that belongs on the school letterhead, tell him to start
-again with "Notice or letter" (the letterhead is not available here).
+again with "Letterhead" (the letterhead is not available here).
 Keep the design plain and print-friendly: black text, A4.
 
 ## PDF output

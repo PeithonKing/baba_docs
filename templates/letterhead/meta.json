@@ -1,9 +1,9 @@
 {
   "id": "letterhead",
-  "name": "Notice or letter",
-  "description": "On the school letterhead",
+  "name": "Letterhead",
+  "description": "Notices, letters, circulars",
   "icon": "letter",
   "formats": ["pdf", "docx"],
-  "nextcloud_folder": "Notices",
+  "nextcloud_folder": "Letterhead",
   "order": 1
 }

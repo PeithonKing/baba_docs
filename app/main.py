@@ -1,41 +1,46 @@
 """Web server. Run: .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8765"""
 import asyncio
-import hashlib
 import contextlib
+import hashlib
 import json
 import logging
+import mimetypes
 import time
 from io import BytesIO
+from pathlib import Path
+from urllib.parse import quote
 
+import httpx
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import (FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse, Response,
+                               StreamingResponse)
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageOps
 
-from . import config, guard, jobs, nextcloud
-from .agent import Sessions
+from . import config, guard, jobs, memory, nextcloud, render, sources
+from .agent import Sessions, format_answers
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+log = logging.getLogger("gcmv")
 sessions = Sessions()
+IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif", ".gif", ".bmp"}
+OFFICE_EXT = {".doc", ".docx", ".odt", ".rtf"}
 
 
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI):
     # A question left open by a previous run stays visible; answering it resumes the saved
     # Claude conversation (see api_answer).
-    for j in jobs.all_jobs():  # catch up on documents built but not yet in Nextcloud
-        _catch_up_sync(j)
-    reaper = asyncio.create_task(sessions.reap_idle())
-    sig = asyncio.create_task(_signature_loop())
+    tasks = [asyncio.create_task(sessions.reap_idle()), asyncio.create_task(_signature_loop()),
+             asyncio.create_task(memory.loop()), asyncio.create_task(_migrate_once())]
     yield
-    reaper.cancel()
-    sig.cancel()
+    for t in tasks:
+        t.cancel()
     await sessions.close_all()
 
 
 async def _signature_loop():
     """Keep the cached signature in step with his Nextcloud (every 30 min)."""
-    log = logging.getLogger("gcmv")
     while True:
         try:
             res = await nextcloud.pull_signature()
@@ -46,11 +51,29 @@ async def _signature_loop():
         await asyncio.sleep(30 * 60)
 
 
-def _catch_up_sync(j: jobs.Job):
-    sync = j.sync or {}
-    if (j.preview_version and j.outputs().get(j.format) and sync.get("state") not in ("conflict", "kept")
-            and sync.get("version") != j.preview_version):
-        sessions.get(j).request_sync()
+async def _migrate_once():
+    """One-time changes to his Nextcloud (e.g. Notices → Letterhead), recorded so they run once."""
+    marker = config.DATA / "migrations.json"
+    done = json.loads(marker.read_text()) if marker.exists() else []
+    if "letterhead-folder" in done or not nextcloud.configured():
+        return
+    try:
+        moved = await nextcloud.migrate_folders()
+    except Exception as e:
+        log.warning("folder migration failed (will retry next start): %r", e)
+        return
+    base = f"{config.NEXTCLOUD_FOLDER}/Notices/"
+    for j in jobs.all_jobs():  # keep each document's record of where it was saved
+        changed = False
+        for rec in j.saved + ([j.exported] if j.exported else []):
+            if rec and rec.get("path", "").startswith(base):
+                rec["path"] = f"{config.NEXTCLOUD_FOLDER}/Letterhead/" + rec["path"][len(base):]
+                changed = True
+        if changed:
+            j.save(touch=False)
+    marker.write_text(json.dumps(done + ["letterhead-folder"]))
+    if moved:
+        log.info("moved in Nextcloud: %s", "; ".join(moved))
 
 
 app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
@@ -70,13 +93,18 @@ app.mount("/static", StaticFiles(directory=config.WEB), name="static")
 
 # ---- pages ------------------------------------------------------------------
 def _busted_index() -> str:
-    """index.html with ?v=<content hash> on our own JS/CSS, so a deploy is never hidden behind a
-    cached copy (Cloudflare's browser-cache TTL overrides our no-cache on .js/.css)."""
-    html = (config.WEB / "index.html").read_text()
-    for name in ("app.js", "style.css"):
-        h = hashlib.sha256((config.WEB / name).read_bytes()).hexdigest()[:10]
-        html = html.replace(f"/static/{name}", f"/static/{name}?v={h}")
-    return html
+    """index.html with ?v=<content hash> on every /static/ file it uses (JS, CSS, icons), so a deploy
+    is never hidden behind a cached copy in the installed app or Cloudflare (its browser-cache TTL
+    overrides our no-cache). index.html itself is always revalidated."""
+    import re
+
+    def bust(m):
+        f = config.WEB / m.group(1)
+        if not f.is_file():
+            return m.group(0)
+        return f"/static/{m.group(1)}?v={hashlib.sha256(f.read_bytes()).hexdigest()[:10]}"
+
+    return re.sub(r"/static/([\w.-]+)(?![\w.?-])", bust, (config.WEB / "index.html").read_text())
 
 
 INDEX_HTML = _busted_index()
@@ -137,33 +165,93 @@ def _job_or_404(job_id: str) -> jobs.Job:
     return j
 
 
-async def _save_photos(job: jobs.Job, photos: list[UploadFile]) -> list[str]:
-    saved = []
+def _safe_name(name: str, fallback: str) -> str:
+    n = nextcloud.clean_name(Path(name or "").name) if name else ""
+    return n if n and n != "Document" else fallback
+
+
+def _unique(folder: Path, name: str) -> Path:
+    p = folder / name
+    stem, suf, n = p.stem, p.suffix, 2
+    while p.exists():
+        p = folder / f"{stem} ({n}){suf}"
+        n += 1
+    return p
+
+
+def _store(job: jobs.Job, name: str, data: bytes, prefix: str = "photo") -> tuple[str, str] | None:
+    """Save one attached file into uploads/. Photos are straightened and resized; other files are
+    kept as they are. Returns (path relative to work, kind)."""
     up = job.work / "uploads"
-    n = len(list(up.glob("*.jpg")))
-    for f in photos:
-        if not f.filename:
-            continue
-        data = await f.read()
+    up.mkdir(exist_ok=True)
+    ext = Path(name or "").suffix.lower()
+    if ext in IMAGE_EXT or (not ext and data[:3] == b"\xff\xd8\xff"):
         try:
             img = ImageOps.exif_transpose(Image.open(BytesIO(data))).convert("RGB")
         except Exception:
+            img = None
+        if img is not None:
+            img.thumbnail((2400, 2400))
+            n = len(list(up.glob(f"{prefix}_*.jpg"))) + 1
+            p = up / f"{prefix}_{n}.jpg"
+            img.save(p, "JPEG", quality=90)
+            return f"uploads/{p.name}", "mark" if prefix == "mark" else "photo"
+    p = _unique(up, _safe_name(name, f"file{ext or ''}"))
+    p.write_bytes(data)
+    kind = {".pdf": "PDF", ".xlsx": "Excel file", ".xls": "Excel file", ".csv": "CSV list", ".txt": "text file"}.get(
+        ext, "Word file" if ext in OFFICE_EXT else "file")
+    return f"uploads/{p.name}", kind
+
+
+async def _gather(job: jobs.Job, files: list[UploadFile], nc_paths: list[str], prefix: str = "photo") -> list[dict]:
+    got = []
+    for f in files:
+        if not f.filename:
             continue
-        img.thumbnail((2000, 2000))
-        n += 1
-        name = f"photo_{n}.jpg"
-        img.save(up / name, "JPEG", quality=88)
-        saved.append(f"uploads/{name}")
-    return saved
+        r = _store(job, f.filename, await f.read(), prefix)
+        if r:
+            got.append({"path": r[0], "kind": r[1], "name": f.filename})
+    for path in nc_paths:
+        try:
+            data, info = await nextcloud.download(path)
+        except Exception as e:
+            log.warning("attach %s failed: %r", path, e)
+            continue
+        r = _store(job, info.get("name") or Path(path).name, data)
+        if r:
+            job = jobs.load(job.id)
+            job.nc_seen[info.get("path") or path] = info.get("etag")
+            job.save()
+            got.append({"path": r[0], "kind": r[1], "name": Path(path).name, "from": path})
+    return got
 
 
-def _compose(text: str, photos: list[str]) -> str:
+def _compose(text: str, att: list[dict], marks_on: str = "") -> str:
     parts = []
-    if photos:
-        parts.append("He sent photo(s): " + ", ".join(photos) + ". Read them.")
+    marks = [a for a in att if a["kind"] == "mark"]
+    other = [a for a in att if a["kind"] != "mark"]
+    if other:
+        parts.append("He attached: " + "; ".join(
+            f"{a['path']} ({a['kind']}" + (f", from his Nextcloud: {a['from']}" if a.get("from") else "") + ")"
+            for a in other) + ". Read them.")
+    if marks:
+        which = "the original file" if marks_on == "original" else "the current document"
+        parts.append(f"He marked {which} with his pen (red ink): " + ", ".join(a["path"] for a in marks) +
+                     ". Look at the marks; confirm with him what he wants before changing anything.")
     if text.strip():
         parts.append(f"His message:\n<<<\n{text.strip()}\n>>>")
     return "\n\n".join(parts) or "(empty message)"
+
+
+DEVICE = {"tablet": "a tablet with a pen", "phone": "a phone", "computer": "a computer"}
+
+
+def _intro(job: jobs.Job, device: str) -> str:
+    meta = next((t for t in jobs.templates() if t["id"] == job.template), {})
+    fmt = {"docx": "Word document (.docx, editable)", "pdf": "PDF"}.get(job.format, job.format)
+    return (f"New document. Kind: {meta.get('name', job.template)} (its files are in the current folder; read "
+            f"GUIDE.md first). Output he chose: {fmt}. Today is {time.strftime('%-d %b %Y')}. "
+            f"He is using {DEVICE.get(device, 'a phone or tablet')}.")
 
 
 @app.get("/api/templates")
@@ -178,41 +266,103 @@ async def api_jobs():
 
 @app.post("/api/jobs")
 async def api_create(template: str = Form(...), format: str = Form("pdf"), text: str = Form(""),
+                     device: str = Form(""), nc_paths: list[str] = Form(default=[]),
                      photos: list[UploadFile] = File(default=[])):
     try:
         job = jobs.create(template, format)
     except ValueError:
         raise HTTPException(400, "unknown template")
-    saved = await _save_photos(job, photos)
-    fmt_name = "Word document (.docx, editable)" if job.format == "docx" else "PDF"
+    att = await _gather(job, photos, nc_paths)
     s = sessions.get(job)
-    s.emit({"type": "user", "text": text.strip(), "photos": saved})
-    intro = (
-        f"New document. Template: {job.template} (its files are in the current folder; read GUIDE.md first). "
-        f"Output: {fmt_name}. Today is {time.strftime('%-d %b %Y')}.\n\n" + _compose(text, saved)
-    )
-    s.start_turn(intro)
+    s.emit({"type": "user", "text": text.strip(), "photos": [a["path"] for a in att if a["kind"] == "photo"],
+            "files": [a["name"] for a in att if a["kind"] != "photo"]})
+    body = _compose(text, att)
+    if not text.strip() and not att:
+        body = "He has not given any content yet. Start by asking him what this document is about."
+    s.start_turn(_intro(job, device) + "\n\n" + body)
     return job.public()
+
+
+@app.post("/api/open")
+async def api_open(device: str = Form(""), nc_path: str = Form(""), file: UploadFile | None = File(default=None)):
+    """'Edit existing file': reopen the document that made it, or start an edit job around it."""
+    info = {}
+    if nc_path:
+        try:
+            data, info = await nextcloud.download(nc_path)
+        except FileNotFoundError:
+            raise HTTPException(404, "not found")
+        name = info.get("name") or Path(nc_path).name
+    elif file is not None and file.filename:
+        data, name = await file.read(), file.filename
+    else:
+        raise HTTPException(400)
+
+    jid = sources.job_id_in(data, name)
+    existing = jobs.load(jid) if jid else None
+    if not existing and jid and nextcloud.configured():
+        existing = await sources.restore(jid)
+    if not existing and info.get("fileid"):
+        existing = jobs.by_fileid(info["fileid"])
+    if existing:
+        if info.get("path"):
+            existing.nc_seen[info["path"]] = info.get("etag")
+            existing.save(touch=False)
+        return {"id": existing.id, "reopened": True}
+
+    job = jobs.create("edit", "pdf")
+    orig_dir = job.work / "original"
+    orig_dir.mkdir(exist_ok=True)
+    fname = _safe_name(name, "file")
+    (orig_dir / fname).write_bytes(data)
+    ext = Path(fname).suffix.lower()
+    kind = "pdf" if ext == ".pdf" else "docx" if ext in OFFICE_EXT else "image" if ext in IMAGE_EXT else "other"
+    preview = None
+    if kind == "pdf":
+        preview = f"original/{fname}"
+    elif kind == "docx":
+        ok, _ = await render.convert(orig_dir / fname, orig_dir / "preview.pdf")
+        preview = "original/preview.pdf" if ok else None
+    elif kind == "image":
+        preview = f"original/{fname}"
+    job = jobs.load(job.id)
+    job.original = {"name": f"original/{fname}", "source": info.get("path"), "kind": kind, "preview": preview}
+    job.title = Path(fname).stem[:120]
+    if info.get("path"):
+        job.nc_seen[info["path"]] = info.get("etag")
+    job.save()
+    s = sessions.get(job)
+    s.emit({"type": "user", "text": "", "files": [fname], "opened": True})
+    where = f"from his Nextcloud: {info['path']}" if info.get("path") else "from his device"
+    s.start_turn(
+        _intro(job, device) + f"\n\nHe wants to change an existing file: original/{fname} ({where}). It was not "
+        "made with this app (no record of it). Follow GUIDE.md: read it first, tell him briefly what you see, "
+        "then ask him what he wants."
+    )
+    return {"id": job.id, "reopened": False}
 
 
 @app.get("/api/jobs/{job_id}")
 async def api_job(job_id: str):
     j = _job_or_404(job_id)
-    _catch_up_sync(j)
     s = sessions.by_job.get(j.id)
     return {**j.public(), "busy": bool(s and s.busy), "question_live": bool(s and s.question_live),
             "events": j.events()}
 
 
 @app.post("/api/jobs/{job_id}/message")
-async def api_message(job_id: str, text: str = Form(""), photos: list[UploadFile] = File(default=[])):
+async def api_message(job_id: str, text: str = Form(""), marks_on: str = Form(""),
+                      nc_paths: list[str] = Form(default=[]), photos: list[UploadFile] = File(default=[]),
+                      marks: list[UploadFile] = File(default=[])):
     j = _job_or_404(job_id)
     s = sessions.get(j)
     if s.busy:
         raise HTTPException(409, "busy")
-    saved = await _save_photos(j, photos)
-    s.emit({"type": "user", "text": text.strip(), "photos": saved})
-    s.start_turn(_compose(text, saved))
+    att = await _gather(j, photos, nc_paths) + await _gather(j, marks, [], prefix="mark")
+    s.emit({"type": "user", "text": text.strip(),
+            "photos": [a["path"] for a in att if a["kind"] in ("photo", "mark")],
+            "files": [a["name"] for a in att if a["kind"] not in ("photo", "mark")]})
+    s.start_turn(_compose(text, att, marks_on))
     return {"ok": True}
 
 
@@ -220,23 +370,28 @@ async def api_message(job_id: str, text: str = Form(""), photos: list[UploadFile
 async def api_answer(job_id: str, request: Request):
     j = _job_or_404(job_id)
     body = await request.json()
-    ans = str(body.get("answer", "")).strip()
-    if not ans:
+    answers = body.get("answers")
+    if answers is None and body.get("answer"):  # old single-answer form
+        answers = [body["answer"]]
+    answers = answers if isinstance(answers, list) else []
+    message = str(body.get("message") or "").strip()
+    if not answers and not message:
         raise HTTPException(400)
     s = sessions.get(j)
-    if s.give_answer(ans):
+    if s.give_answer(answers, message):
         return {"ok": True}
     # The question's tool call is gone (e.g. server restarted): resume the saved conversation.
     if s.busy:
         raise HTTPException(409, "busy")
-    q = (j.pending_question or {}).get("question")
+    card = j.pending_question or {}
+    qs = card.get("questions") or ([{"question": card["question"]}] if card.get("question") else [])
     j.pending_question = None
     j.save()
-    s.emit({"type": "user", "text": ans, "answer": True})
+    s.emit({"type": "answered", "answers": answers, "message": message})
     s.start_turn(
-        "(The app restarted while you were waiting for his answer, so that question's tool call was "
-        f"interrupted. Do not ask it again.) "
-        + (f'You asked: "{q}". ' if q else "") + f"His answer: {ans}. Continue from there."
+        "(The app restarted while you were waiting for his answers, so that question card's tool call was "
+        "interrupted. Do not ask the same questions again.)\n\n" + format_answers(qs, answers, message) +
+        "\n\nContinue from there."
     )
     return {"ok": True}
 
@@ -271,7 +426,7 @@ async def api_stream(job_id: str, request: Request, after: int = 0):
 
 
 @app.get("/api/jobs/{job_id}/file/{name}")
-async def api_file(job_id: str, name: str, download: int = 0):
+async def api_file(job_id: str, name: str, download: int = 0, share: int = 0):
     j = _job_or_404(job_id)
     if name not in ("document.pdf", "document.docx", "preview.pdf"):
         raise HTTPException(404)
@@ -280,53 +435,83 @@ async def api_file(job_id: str, name: str, download: int = 0):
         raise HTTPException(404)
     ext = name.split(".")[1]
     nice = "".join(c for c in j.title if c.isalnum() or c in " -_–").strip() or "document"
-    return FileResponse(f, filename=f"{nice}.{ext}" if download else None,
-                        content_disposition_type="attachment" if download else "inline",
-                        headers={"Cache-Control": "no-cache"})
+    # files leaving the app carry the document's id, so they can be reopened for editing later
+    data = sources.stamped(j, f) if (download or share) and name.startswith("document.") else f.read_bytes()
+    disp = f"attachment; filename*=UTF-8''{quote(nice + '.' + ext)}" if download else "inline"
+    return Response(data, media_type=mimetypes.types_map.get("." + ext, "application/octet-stream")
+                    if ext != "docx" else "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    headers={"Cache-Control": "no-cache", "Content-Disposition": disp})
+
+
+def _inside(base: Path, rel: str) -> Path:
+    f = (base / rel).resolve()
+    if not f.is_relative_to(base.resolve()) or not f.is_file():
+        raise HTTPException(404)
+    return f
 
 
 @app.get("/api/jobs/{job_id}/upload/{name}")
 async def api_upload(job_id: str, name: str):
     j = _job_or_404(job_id)
-    f = (j.work / "uploads" / name).resolve()
-    if not f.is_relative_to((j.work / "uploads").resolve()) or not f.exists():
+    return FileResponse(_inside(j.work / "uploads", name))
+
+
+@app.get("/api/jobs/{job_id}/original")
+async def api_original(job_id: str):
+    """What to show as 'Original' (an edit job): the PDF / preview PDF / image."""
+    j = _job_or_404(job_id)
+    if not j.original or not j.original.get("preview"):
         raise HTTPException(404)
-    return FileResponse(f)
-
-
-@app.post("/api/jobs/{job_id}/sync")
-async def api_sync(job_id: str):
-    """Retry a failed Nextcloud save (the normal save happens automatically after each build)."""
-    j = _job_or_404(job_id)
-    if not nextcloud.configured():
-        return {"ok": False, "message": "Nextcloud is not set up yet. Please download the file for now."}
-    if not j.outputs().get(j.format):
-        raise HTTPException(400, "nothing to save yet")
-    sessions.get(j).request_sync()
-    return {"ok": True}
-
-
-@app.post("/api/jobs/{job_id}/sync/resolve")
-async def api_sync_resolve(job_id: str, request: Request):
-    """His choice after 'this document was changed in Nextcloud': merge | overwrite | keep."""
-    j = _job_or_404(job_id)
-    choice = (await request.json()).get("choice")
-    if choice not in ("merge", "overwrite", "keep"):
-        raise HTTPException(400)
-    try:
-        await sessions.get(j).resolve_conflict(choice)
-    except Exception:
-        logging.getLogger("gcmv").exception("resolve failed for %s", j.id)
-        return {"ok": False, "message": "Could not reach Nextcloud. Please try again."}
-    return {"ok": True}
+    return FileResponse(_inside(j.work, j.original["preview"]), headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/api/jobs/{job_id}/nextcloud")
 async def api_nextcloud_link(job_id: str):
-    """Redirect to the file in his Nextcloud web UI."""
+    """Open the document's saved file in his Nextcloud web UI."""
     j = _job_or_404(job_id)
-    fid = (j.exported or {}).get("fileid")
-    if not fid:
+    last = j.last_saved()
+    if not last:
         raise HTTPException(404)
-    base = (config.NEXTCLOUD_PUBLIC_URL or config.NEXTCLOUD_URL).rstrip("/")
-    return RedirectResponse(f"{base}/f/{fid}", status_code=302)
+    return RedirectResponse(nextcloud.web_link(last.get("fileid"), last["path"]), status_code=302)
+
+
+# ---- Nextcloud file picker ---------------------------------------------------
+def _nc_item(i: dict) -> dict:
+    return {k: i.get(k) for k in ("path", "name", "dir", "size", "modified", "type", "fileid")}
+
+
+@app.get("/api/nc/list")
+async def api_nc_list(path: str = ""):
+    if not nextcloud.configured():
+        raise HTTPException(503, "Nextcloud is not set up")
+    try:
+        items = await nextcloud.listdir(path)
+    except FileNotFoundError:
+        raise HTTPException(404)
+    except ValueError:
+        raise HTTPException(400)
+    hide = config.NEXTCLOUD_SOURCES
+    return {"path": nextcloud.norm(path), "items": [_nc_item(i) for i in items if not i["path"].startswith(hide)]}
+
+
+@app.get("/api/nc/search")
+async def api_nc_search(q: str):
+    if not nextcloud.configured():
+        raise HTTPException(503)
+    if len(q.strip()) < 2:
+        return {"items": []}
+    return {"items": [_nc_item(i) for i in await nextcloud.search(q.strip())]}
+
+
+@app.get("/api/nc/thumb/{fileid}")
+async def api_nc_thumb(fileid: str):
+    """Small preview image of a Nextcloud file (from Nextcloud's own preview service)."""
+    if not fileid.isdigit() or not nextcloud.configured():
+        raise HTTPException(404)
+    url = config.NEXTCLOUD_URL.rstrip("/") + f"/index.php/core/preview?fileId={fileid}&x=160&y=160&a=1"
+    async with httpx.AsyncClient(auth=(config.NEXTCLOUD_USER, config.NEXTCLOUD_APP_PASSWORD), timeout=30) as c:
+        r = await c.get(url)
+    if r.status_code != 200:
+        raise HTTPException(404)
+    return Response(r.content, media_type=r.headers.get("content-type", "image/png"),
+                    headers={"Cache-Control": "private, max-age=86400"})

@@ -1,0 +1,11 @@
+{
+  "id": "edit",
+  "name": "Edit existing file",
+  "description": "A file from Nextcloud or this device",
+  "icon": "open",
+  "formats": ["pdf", "docx"],
+  "nextcloud_folder": "Other",
+  "library": ["letterhead", "question_paper", "blank"],
+  "picker": true,
+  "order": 10
+}

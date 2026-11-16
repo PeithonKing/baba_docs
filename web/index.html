@@ -32,6 +32,14 @@
   <symbol id="i-cloud-off" viewBox="0 0 24 24"><path d="M7 18a4.5 4.5 0 0 1-.6-8.96A6 6 0 0 1 18 9.5a4 4 0 0 1-.5 8.5z"/><path d="M12 10.5v3M12 15.8v.2"/></symbol>
   <symbol id="i-share" viewBox="0 0 24 24"><circle cx="18" cy="5.5" r="2.5"/><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="18.5" r="2.5"/><path d="M8.2 10.8l7.6-4.1M8.2 13.2l7.6 4.1"/></symbol>
   <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+  <symbol id="i-open" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v1"/><path d="M3 7v10a2 2 0 0 0 2 2h11.5a2 2 0 0 0 1.9-1.4L21 11H8.5a2 2 0 0 0-1.9 1.4L4.5 19"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
+  <symbol id="i-pen" viewBox="0 0 24 24"><path d="M15.5 4.5l4 4L9 19l-5 1 1-5z"/><path d="M13.5 6.5l4 4"/></symbol>
+  <symbol id="i-undo" viewBox="0 0 24 24"><path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.2-4.2"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
 </svg>
 
 <header class="top" id="top" hidden>
@@ -87,19 +95,36 @@
 
 <!-- Give content -->
 <main id="content" class="screen" hidden>
-  <h2 class="lead">Send a photo of the page, or type the text.</h2>
-  <div class="photo-buttons">
-    <label class="btn primary"><svg><use href="#i-cam"/></svg>Take a photo
-      <input type="file" accept="image/*" capture="environment" multiple hidden data-photos>
-    </label>
-    <label class="btn"><svg><use href="#i-image"/></svg>Choose photos
-      <input type="file" accept="image/*" multiple hidden data-photos>
-    </label>
+  <h2 class="lead">What is this document about?</h2>
+  <p class="hint">Add a photo or file if you have one, or write a few words. I will ask you the rest.</p>
+  <div class="add-grid" data-attach="content">
+    <button class="add" data-src="camera"><svg><use href="#i-cam"/></svg><span>Camera</span></button>
+    <button class="add" data-src="gallery"><svg><use href="#i-image"/></svg><span>Gallery</span></button>
+    <button class="add" data-src="files"><img src="/static/myfiles.png" alt=""><span>Files</span></button>
+    <button class="add" data-src="nextcloud"><img src="/static/nextcloud.svg" alt="" class="nc"><span>Nextcloud</span></button>
   </div>
-  <div id="thumbs" class="thumbs"></div>
-  <textarea id="content-text" rows="6" aria-label="Text and instructions"
-    placeholder="Type or paste the text here, with any instructions."></textarea>
-  <button id="start" class="btn primary wide">Make the document</button>
+  <div id="content-att" class="attached"></div>
+  <textarea id="content-text" rows="5" aria-label="Text and instructions"
+    placeholder="Type or paste here (or tap the microphone on your keyboard and speak)."></textarea>
+  <button id="start" class="btn primary wide">Start</button>
+</main>
+
+<!-- Edit existing file: where is it? -->
+<main id="open" class="screen" hidden>
+  <h2 class="lead">Where is the file?</h2>
+  <ul class="rows big">
+    <li><button class="row" id="open-nc">
+      <img class="logo nc" src="/static/nextcloud.svg" alt="">
+      <span class="t"><b>Nextcloud</b><span class="wrap">Files saved in your Nextcloud</span></span>
+      <svg class="chev"><use href="#i-chev"/></svg>
+    </button></li>
+    <li><button class="row" id="open-device">
+      <img class="logo" src="/static/myfiles.png" alt="">
+      <span class="t"><b>This device</b><span class="wrap">Files on this tablet or phone (Downloads, WhatsApp…)</span></span>
+      <svg class="chev"><use href="#i-chev"/></svg>
+    </button></li>
+  </ul>
+  <p id="open-busy" class="status center" hidden><span class="spin"></span><span>Opening the file…</span></p>
 </main>
 
 <!-- Job: chat + document -->
@@ -110,22 +135,69 @@
   </div>
   <section id="chat" class="pane chat-pane">
     <div id="messages" class="messages" aria-live="polite"></div>
-    <div id="chat-thumbs" class="thumbs small"></div>
+    <div id="chat-att" class="attached small"></div>
     <form id="composer" class="composer">
-      <label class="icon-btn" aria-label="Add photo"><svg><use href="#i-cam"/></svg>
-        <input type="file" accept="image/*" multiple hidden id="chat-photos">
-      </label>
+      <div class="menu-wrap">
+        <button type="button" class="icon-btn" id="plus" data-menu="plus-menu" aria-label="Add a photo or file" aria-haspopup="true" aria-expanded="false"><svg><use href="#i-plus"/></svg></button>
+        <div id="plus-menu" class="menu up" role="menu" hidden data-attach="chat">
+          <a role="menuitem" data-src="camera"><svg><use href="#i-cam"/></svg>Camera</a>
+          <a role="menuitem" data-src="gallery"><svg><use href="#i-image"/></svg>Gallery</a>
+          <a role="menuitem" data-src="files"><img src="/static/myfiles.png" alt="">Files</a>
+          <a role="menuitem" data-src="nextcloud"><img src="/static/nextcloud.svg" alt="" class="nc">Nextcloud</a>
+        </div>
+      </div>
       <textarea id="chat-text" rows="1" placeholder="Message" aria-label="Message"></textarea>
       <button class="send" id="send" aria-label="Send"><svg><use href="#i-up"/></svg></button>
     </form>
   </section>
   <section id="doc" class="pane doc-pane">
-    <div class="desk">
-      <p id="doc-empty" class="doc-empty">The document will appear here.</p>
+    <div id="doc-bar" class="doc-bar" hidden>
+      <div id="view-seg" class="seg mini" hidden>
+        <button data-view="original">Original</button>
+        <button data-view="new" class="on">New</button>
+      </div>
+      <span class="grow"></span>
+      <button id="pen" class="btn small" hidden><svg><use href="#i-pen"/></svg><span>Mark with pen</span></button>
+      <div id="pen-bar" class="pen-bar" hidden>
+        <button id="pen-undo" class="icon-btn" aria-label="Undo"><svg><use href="#i-undo"/></svg></button>
+        <button id="pen-cancel" class="btn small">Cancel</button>
+        <button id="pen-send" class="btn small primary">Send marks</button>
+      </div>
+    </div>
+    <p id="pen-hint" class="pen-hint" hidden>Circle or write on the page with your pen, like correcting a paper. Then tap <b>Send marks</b>.</p>
+    <div class="desk" id="desk">
+      <div id="updating" class="updating" hidden><span class="spin"></span><span>Updating…</span></div>
+      <div id="doc-empty" class="doc-empty">
+        <div class="sheet ghost"><i></i><i></i><i></i><i></i><i></i></div>
+        <p>Your document will appear here.</p>
+      </div>
+      <div id="drafting" class="doc-empty" hidden>
+        <div class="sheet typing"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+        <p>Making your draft…</p>
+      </div>
       <div id="pages" class="pages"></div>
+      <div id="pages-orig" class="pages" hidden></div>
     </div>
   </section>
 </main>
+
+<!-- Nextcloud file picker -->
+<div id="picker" class="picker" hidden role="dialog" aria-modal="true" aria-labelledby="picker-title">
+  <div class="picker-top">
+    <button id="picker-close" class="icon-btn" aria-label="Close"><svg><use href="#i-x"/></svg></button>
+    <img src="/static/nextcloud.svg" alt="" class="nc">
+    <h1 id="picker-title">Nextcloud</h1>
+  </div>
+  <div class="picker-search"><svg><use href="#i-search"/></svg><input id="picker-q" type="search" placeholder="Search by name" aria-label="Search by name"></div>
+  <nav id="crumbs" class="crumbs"></nav>
+  <ul id="picker-list" class="rows files"></ul>
+  <div id="picker-foot" class="picker-foot" hidden><button id="picker-ok" class="btn primary wide">Add</button></div>
+</div>
+
+<input type="file" id="in-camera" accept="image/*" capture="environment" hidden>
+<input type="file" id="in-gallery" accept="image/*" multiple hidden>
+<input type="file" id="in-files" multiple hidden>
+<input type="file" id="in-open" accept=".pdf,.doc,.docx,.odt,.rtf,image/*,application/pdf" hidden>
 
 <div id="toast" class="toast" role="status" hidden></div>
 <script src="/static/app.js"></script>
