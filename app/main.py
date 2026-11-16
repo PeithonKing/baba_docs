@@ -81,20 +81,27 @@ app.add_middleware(guard.DeviceGuard)
 
 
 @app.middleware("http")
-async def no_edge_cache(request: Request, call_next):
-    """Cloudflare would otherwise cache /static/*.js|css for hours; the files are tiny, so
-    always revalidate (ETag makes repeat loads cheap)."""
+async def cache_rules(request: Request, call_next):
+    """A file asked for by its current fingerprint (?v=<hash>, see _build) can never change, so the
+    browser keeps it for good and skips the round trip. Everything else of ours is revalidated
+    every time (Cloudflare would otherwise cache /static/*.js|css for hours)."""
     resp = await call_next(request)
-    if request.url.path.startswith("/static/") or request.url.path in ("/", "/sw.js", "/manifest.webmanifest"):
+    path = request.url.path
+    if path.startswith("/static/"):
+        name = path.removeprefix("/static/")
+        fresh = resp.status_code == 200 and request.query_params.get("v") and VERS.get(name) == request.query_params["v"]
+        resp.headers["Cache-Control"] = "public, max-age=31536000, immutable" if fresh else "no-cache"
+    elif path in ("/", "/sw.js", "/manifest.webmanifest"):
         resp.headers["Cache-Control"] = "no-cache"
     return resp
+
 # ---- pages & app files ---------------------------------------------------------
 # Every deploy must reach the installed app (PWA) without reinstalling it:
 # - index.html is never cached, and names each file it uses with ?v=<content hash>;
 # - app.js / style.css get the same treatment for files *they* reference;
 # - the page carries a build id; the app compares it with /api/version when it comes back to the
 #   foreground (or every few minutes) and reloads itself at a safe moment when it changed.
-def _build() -> tuple[str, dict, str]:
+def _build() -> tuple[str, dict, str, dict]:
     import re
 
     files = {p.name: p.read_bytes() for p in config.WEB.iterdir() if p.is_file()}
@@ -112,10 +119,10 @@ def _build() -> tuple[str, dict, str]:
     build = h("".join(f"{k}:{v}" for k, v in sorted(ver.items())).encode())
     index = bust(files["index.html"].decode()).replace(
         "</head>", f'<meta name="build" content="{build}">\n</head>', 1)
-    return index, texts, build
+    return index, texts, build, ver
 
 
-INDEX_HTML, BUSTED, BUILD = _build()
+INDEX_HTML, BUSTED, BUILD, VERS = _build()  # VERS: file name → its current fingerprint
 
 
 @app.get("/static/{name}.{ext}", include_in_schema=False)
@@ -125,7 +132,7 @@ async def busted_asset(name: str, ext: str):
     if text is None:
         return FileResponse(_static_file(f"{name}.{ext}"))
     kind = "text/javascript" if ext == "js" else "text/css"
-    return Response(text, media_type=f"{kind}; charset=utf-8", headers={"Cache-Control": "no-cache"})
+    return Response(text, media_type=f"{kind}; charset=utf-8")
 
 
 def _static_file(name: str):

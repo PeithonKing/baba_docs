@@ -1,9 +1,9 @@
 {
   "id": "blank",
-  "name": "Other document",
-  "description": "Forms, lists, timetables",
+  "name": "New document",
+  "description": "Other kinds of documents",
   "icon": "new",
   "formats": ["pdf", "docx"],
   "nextcloud_folder": "Other",
-  "order": 9
+  "order": 4
 }

@@ -7,5 +7,5 @@
   "nextcloud_folder": "Other",
   "library": ["letterhead", "question_paper", "blank"],
   "picker": true,
-  "order": 10
+  "order": 2
 }

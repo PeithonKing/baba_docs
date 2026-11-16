@@ -39,12 +39,21 @@
   <symbol id="i-pen" viewBox="0 0 24 24"><path d="M15.5 4.5l4 4L9 19l-5 1 1-5z"/><path d="M13.5 6.5l4 4"/></symbol>
   <symbol id="i-undo" viewBox="0 0 24 24"><path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/></symbol>
   <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.2-4.2"/></symbol>
+  <symbol id="i-chat" viewBox="0 0 24 24"><path d="M5 5h14a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H10l-4 3.5V16H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z"/></symbol>
+  <symbol id="i-split" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="14" rx="1.5"/><path d="M11 5v14"/></symbol>
+  <symbol id="i-doc" viewBox="0 0 24 24"><rect x="5.5" y="3.5" width="13" height="17" rx="1.5"/><path d="M8.5 8h7M8.5 11.5h7M8.5 15h4"/></symbol>
+  <symbol id="i-minus" viewBox="0 0 24 24"><path d="M6 12h12"/></symbol>
   <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
 </svg>
 
 <header class="top" id="top" hidden>
   <button id="back" class="icon-btn" aria-label="Back"><svg><use href="#i-back"/></svg></button>
   <h1 id="top-title"></h1>
+  <div id="layout-seg" class="seg layout" role="tablist" aria-label="What to show" hidden>
+    <button data-layout="chat" title="Chat only"><svg><use href="#i-chat"/></svg><span>Chat</span></button>
+    <button data-layout="split" title="Side by side"><svg><use href="#i-split"/></svg><span>Side by side</span></button>
+    <button data-layout="doc" title="Document only"><svg><use href="#i-doc"/></svg><span>Document</span></button>
+  </div>
   <div id="doc-actions" class="top-actions" hidden>
     <a id="sync" class="sync" hidden></a>
     <div class="menu-wrap">
@@ -157,6 +166,11 @@
         <button data-view="new" class="on">New</button>
       </div>
       <span class="grow"></span>
+      <div id="zoom" class="zoom" hidden>
+        <button id="zoom-out" class="icon-btn" aria-label="Smaller"><svg><use href="#i-minus"/></svg></button>
+        <button id="zoom-level" class="zoom-level" title="Back to normal size">100%</button>
+        <button id="zoom-in" class="icon-btn" aria-label="Bigger"><svg><use href="#i-plus"/></svg></button>
+      </div>
       <button id="pen" class="btn small" hidden><svg><use href="#i-pen"/></svg><span>Mark with pen</span></button>
       <div id="pen-bar" class="pen-bar" hidden>
         <button id="pen-undo" class="icon-btn" aria-label="Undo"><svg><use href="#i-undo"/></svg></button>
@@ -165,6 +179,7 @@
       </div>
     </div>
     <p id="pen-hint" class="pen-hint" hidden>Circle or write on the page with your pen, like correcting a paper. Then tap <b>Send marks</b>.</p>
+    <button id="waiting" class="waiting" hidden></button>
     <div class="desk" id="desk">
       <div id="updating" class="updating" hidden><span class="spin"></span><span>Updating…</span></div>
       <div id="doc-empty" class="doc-empty">

@@ -172,9 +172,9 @@ textarea:focus { outline: none; border-color: #bdbab2; }
 .send svg { width: 20px; height: 20px; }
 .send:disabled { opacity: .3; cursor: default; }
 
-.desk { flex: 1; overflow-y: auto; background: var(--desk); padding: 1rem; display: flex; flex-direction: column; }
+.desk { flex: 1; overflow: auto; background: var(--desk); padding: 1rem; display: flex; flex-direction: column; touch-action: pan-x pan-y; }
 .doc-empty { margin: auto; color: var(--muted); font-size: .9rem; }
-.pages { display: flex; flex-direction: column; align-items: center; gap: 1rem; }
+.pages { display: flex; flex-direction: column; align-items: flex-start; gap: 1rem; }
 .pages canvas { width: 100%; max-width: 820px; height: auto; background: #fff; box-shadow: 0 2px 10px rgba(0,0,0,.10); }
 .link { display: inline-flex; align-items: center; gap: .4rem; color: var(--text); font-weight: 500; text-decoration: none; padding: .5rem .25rem; }
 
@@ -311,8 +311,8 @@ textarea:focus { outline: none; border-color: #bdbab2; }
 .sheet.typing i:nth-child(4) { animation-delay: .75s; } .sheet.typing i:nth-child(5) { animation-delay: 1s; }
 .sheet.typing i:nth-child(6) { animation-delay: 1.25s; } .sheet.typing i:nth-child(7) { animation-delay: 1.5s; }
 @keyframes type { 0% { transform: scaleX(0); opacity: .4; } 40%, 80% { transform: scaleX(1); opacity: 1; } 100% { transform: scaleX(1); opacity: 0; } }
-.page { position: relative; width: 100%; max-width: 820px; background: #fff; box-shadow: 0 2px 10px rgba(0,0,0,.10); }
-.pages canvas { box-shadow: none; display: block; width: 100%; height: 100%; }
+.page { position: relative; flex: none; width: calc(100% * var(--zoom, 1)); max-width: calc(820px * var(--zoom, 1)); margin: 0 auto; background: #fff; box-shadow: 0 2px 10px rgba(0,0,0,.10); }
+.pages canvas, .page canvas { box-shadow: none; display: block; width: 100%; height: 100%; max-width: none; }
 .page .marks { position: absolute; inset: 0; pointer-events: none; }
 .page canvas.ink { position: absolute; inset: 0; width: 100%; height: 100%; background: transparent; touch-action: none; cursor: crosshair; }
 .hl { position: absolute; display: block; background: rgba(255, 214, 10, .42); mix-blend-mode: multiply; border-radius: 3px; transform-origin: left; animation: hl 4s ease-out both; }
@@ -329,3 +329,42 @@ textarea:focus { outline: none; border-color: #bdbab2; }
   .sheet.typing i { animation-duration: 6s; }
   .hl { animation: hl 4s linear both; }
 }
+
+/* ---------- layouts (tablet / computer): chat only · side by side · document only ---------- */
+.seg.layout { margin: 0 .4rem; flex: none; }
+.seg.layout button { display: inline-flex; align-items: center; gap: .35rem; padding: .4rem .65rem; white-space: nowrap; }
+.seg.layout svg { width: 18px; height: 18px; }
+.seg.layout span { display: none; }
+@media (min-width: 1100px) { .seg.layout span { display: inline; } }
+@media (max-width: 739px) { .seg.layout { display: none !important; } }
+@media (min-width: 740px) {
+  .seg.layout:not([hidden]) { display: flex; }
+  .job.layout-doc .chat-pane { display: none !important; }
+  .job.layout-chat .doc-pane { display: none !important; }
+  .job.layout-chat .chat-pane { flex: 1; max-width: none; border-right: 0; }
+  .job.layout-chat .messages, .job.layout-chat .composer, .job.layout-chat .attached.small { width: 100%; max-width: 760px; margin-left: auto; margin-right: auto; }
+}
+
+/* full-screen marking: just the document */
+body.marking-full #top { display: none !important; }
+.job.marking-full .chat-pane, .job.marking-full > .seg { display: none !important; }
+.job.marking-full .doc-pane { display: flex !important; flex: 1; }
+
+/* zoom */
+.zoom { display: flex; align-items: center; gap: .1rem; }
+.zoom .icon-btn { padding: .35rem; }
+.zoom .icon-btn svg { width: 19px; height: 19px; }
+.zoom-level { border: 0; background: none; font-size: .8rem; color: var(--muted); min-width: 3.2rem; padding: .3rem .2rem; border-radius: 8px; cursor: pointer; font-variant-numeric: tabular-nums; }
+.zoom-level:hover { background: var(--soft); }
+
+/* "a question is waiting" when only the document is on screen */
+.doc-pane { position: relative; }
+.waiting { position: absolute; left: 50%; bottom: max(1.1rem, env(safe-area-inset-bottom)); transform: translateX(-50%); z-index: 6;
+  display: flex; align-items: center; gap: .55rem; border-radius: 999px; padding: .7rem 1.15rem; font-weight: 500; font-size: .92rem;
+  white-space: nowrap; cursor: pointer; border: 1px solid var(--line); background: var(--white); color: var(--muted);
+  box-shadow: 0 6px 20px rgba(0,0,0,.12); }
+.waiting.ask { background: var(--accent); color: var(--accent-text); border-color: var(--accent); animation: pill-in .3s ease-out, pill-pulse 2.6s ease-in-out .3s infinite; }
+.waiting svg { width: 20px; height: 20px; }
+@keyframes pill-in { from { opacity: 0; transform: translate(-50%, 10px); } }
+@keyframes pill-pulse { 50% { box-shadow: 0 6px 20px rgba(0,0,0,.12), 0 0 0 7px rgba(28,28,26,.12); } }
+@media (prefers-reduced-motion: reduce) { .waiting.ask { animation: none; } }

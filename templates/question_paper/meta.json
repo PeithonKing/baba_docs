@@ -5,5 +5,5 @@
   "icon": "qp",
   "formats": ["pdf"],
   "nextcloud_folder": "Question Papers",
-  "order": 2
+  "order": 3
 }

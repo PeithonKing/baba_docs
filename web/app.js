@@ -47,6 +47,7 @@ function show(id, title) {
   $("#top").classList.toggle("wide", id === "job");
   $("#top-title").textContent = title || "";
   if (id !== "job") $("#doc-actions").hidden = true;
+  $("#layout-seg").hidden = id !== "job";
   closeMenus();
 }
 function fmtDate(t) {
@@ -69,7 +70,7 @@ $("#back").onclick = () => (history.length > 1 ? history.back() : (location.hash
 
 async function route() {
   if (stream) { stream.close(); stream = null; }
-  closePicker();
+  hidePicker();
   const parts = location.hash.replace(/^#\/?/, "").split("/").filter(Boolean);
   if (!templates.length) templates = await api("/api/templates");
   if (parts[0] === "open") return showOpen();
@@ -183,7 +184,7 @@ $("#open-nc").onclick = () => openPicker({ mode: "open" });
 $("#open-device").onclick = () => $("#in-open").click();
 $("#in-open").onchange = () => { const f = $("#in-open").files[0]; $("#in-open").value = ""; if (f) startOpen({ file: f }); };
 async function startOpen({ file, path }) {
-  closePicker();
+  await closePicker();
   $("#open-busy").hidden = false;
   const fd = new FormData(); fd.append("device", DEVICE);
   if (file) fd.append("file", file); else fd.append("nc_path", path);
@@ -197,17 +198,37 @@ async function startOpen({ file, path }) {
 // ---------------- Nextcloud picker ----------------
 const picker = { mode: "attach", path: "", chosen: new Map(), q: "" };
 const EXT_ICON = { pdf: "pdf", docx: "edit", doc: "edit", odt: "edit" };
+// Each folder he opens is a step in the browser history, so the phone's Back goes up one folder;
+// Back at the top closes the picker and leaves him where he was.
 function openPicker({ mode }) {
-  picker.mode = mode; picker.chosen = new Map(); picker.q = "";
+  picker.mode = mode; picker.chosen = new Map(); picker.q = ""; picker.depth = 0;
   $("#picker-q").value = "";
   $("#picker-title").textContent = mode === "open" ? "Choose the file to edit" : "Add from Nextcloud";
   $("#picker").hidden = false; document.body.classList.add("noscroll");
   updatePickerFoot();
-  loadFolder(picker.path || "");
+  loadFolder("");  // always start at the top of his Nextcloud
 }
-function closePicker() { $("#picker").hidden = true; document.body.classList.remove("noscroll"); }
-$("#picker-close").onclick = closePicker;
-async function loadFolder(path) {
+function hidePicker() { $("#picker").hidden = true; document.body.classList.remove("noscroll"); picker.depth = 0; }
+function closePicker() {  // also removes its history steps; resolves once that is done
+  if ($("#picker").hidden) return Promise.resolve();
+  if (!picker.depth) { hidePicker(); return Promise.resolve(); }
+  return new Promise((done) => { picker.closing = done; history.go(-picker.depth); });
+}
+window.addEventListener("popstate", (e) => {
+  if ($("#picker").hidden) return;
+  const st = e.state;
+  if (picker.closing || !st || !("picker" in st)) {
+    const done = picker.closing; picker.closing = null;
+    hidePicker(); done?.();
+    return;
+  }
+  picker.depth = st.depth;
+  picker.q = ""; $("#picker-q").value = "";
+  loadFolder(st.picker, false);
+});
+$("#picker-close").onclick = () => closePicker();
+async function loadFolder(path, push = true) {
+  if (push) { picker.depth++; history.pushState({ picker: path, depth: picker.depth }, ""); }
   picker.path = path;
   renderCrumbs(path);
   const ul = $("#picker-list"); ul.innerHTML = ""; ul.append(el("li", "loading", "Loading…"));
@@ -276,7 +297,7 @@ $("#picker-q").oninput = () => {
   clearTimeout(searchT);
   searchT = setTimeout(async () => {
     picker.q = $("#picker-q").value.trim();
-    if (picker.q.length < 2) { picker.q = ""; return loadFolder(picker.path); }
+    if (picker.q.length < 2) { picker.q = ""; return loadFolder(picker.path, false); }
     renderCrumbs(picker.path);
     try { renderItems((await api(`/api/nc/search?q=${encodeURIComponent(picker.q)}`)).items, true); } catch { }
   }, 350);
@@ -290,6 +311,7 @@ async function openJob(id) {
   $("#messages").innerHTML = ""; $("#pages").innerHTML = ""; $("#pages-orig").innerHTML = "";
   $("#doc-actions").hidden = true; $("#doc-dot").hidden = true; $("#doc-bar").hidden = true;
   stopMarking(); pageInfo.new = []; pageInfo.original = [];
+  setZoom(1);
   status = null; lastSeq = 0; hasPreview = false;
   let j;
   try { j = await api(`/api/jobs/${id}`); } catch { return (location.hash = "#/"); }
@@ -377,6 +399,7 @@ function handleEvent(ev, replay) {
       break;
   }
   scrollChat();
+  renderPill();
 }
 
 // ---------------- question cards ----------------
@@ -560,10 +583,50 @@ function setBusy(b) { busy = b; $("#send").disabled = b; }
 // tabs (phone)
 function setTab(t) {
   $("#job").classList.toggle("show-doc", t === "doc");
-  for (const b of $$(".seg:not(.mini) button")) b.classList.toggle("on", b.dataset.tab === t);
-  if (t === "doc") $("#doc-dot").hidden = true;
+  for (const b of $$("[data-tab]")) b.classList.toggle("on", b.dataset.tab === t);
+  if (t === "doc") { $("#doc-dot").hidden = true; sharpenSoon(); }
+  renderPill();
 }
-for (const b of $$(".seg:not(.mini) button")) b.onclick = () => setTab(b.dataset.tab);
+for (const b of $$("[data-tab]")) b.onclick = () => setTab(b.dataset.tab);
+
+// layouts on a tablet / computer, like Overleaf: chat only · side by side · document only
+const WIDE = matchMedia("(min-width: 740px)");
+let layout = (() => { try { return localStorage.getItem("layout") || "split"; } catch { return "split"; } })();
+function setLayout(l) {
+  layout = l;
+  const j = $("#job");
+  j.classList.remove("layout-chat", "layout-split", "layout-doc");
+  j.classList.add(`layout-${l}`);
+  for (const b of $$("[data-layout]")) b.classList.toggle("on", b.dataset.layout === l);
+  try { localStorage.setItem("layout", l); } catch { }
+  if (l !== "doc" && WIDE.matches) scrollChat();
+  sharpenSoon();
+  renderPill();
+}
+for (const b of $$("[data-layout]")) b.onclick = () => setLayout(b.dataset.layout);
+WIDE.addEventListener("change", () => { sharpenSoon(); renderPill(); });
+setLayout(layout);
+
+// Only the document is on screen: never let a waiting question (or work in progress) go unnoticed.
+function docOnly() {
+  if (marking) return false;
+  return WIDE.matches ? layout === "doc" : $("#job").classList.contains("show-doc");
+}
+function renderPill() {
+  const pill = $("#waiting");
+  if (!job || $("#job").hidden) { pill.hidden = true; return; }
+  const card = openCard();
+  pill.hidden = !docOnly() || !(card || busy);
+  if (pill.hidden) return;
+  pill.className = card ? "waiting ask" : "waiting work";
+  pill.replaceChildren(...(card ? [icon("chat"), el("span", null, "A question is waiting — tap to answer")]
+    : [el("span", "spin"), el("span", null, "Working on it…")]));
+}
+$("#waiting").onclick = () => {
+  if (WIDE.matches) setLayout("split"); else setTab("chat");
+  const card = openCard();
+  if (card) setTimeout(() => card.scrollIntoView({ behavior: REDUCED ? "auto" : "smooth", block: "center" }), 60);
+};
 
 // ---------------- document side ----------------
 let hasPreview = false;
@@ -576,12 +639,14 @@ function setView(v) {
   $("#pages-orig").hidden = v !== "original";
   for (const b of $$("#view-seg button")) b.classList.toggle("on", b.dataset.view === v);
   $("#view-seg").hidden = !job.original;
-  $("#pen").hidden = !PEN_OK || !(v === "new" ? hasPreview : pageInfo.original.length);
-  $("#doc-bar").hidden = $("#view-seg").hidden && $("#pen").hidden && $("#pen-bar").hidden;
+  const shown = v === "new" ? hasPreview : pageInfo.original.length > 0;
+  $("#pen").hidden = !PEN_OK || !shown || !!marking;
+  $("#zoom").hidden = !shown;
+  $("#doc-bar").hidden = $("#view-seg").hidden && $("#pen").hidden && $("#pen-bar").hidden && $("#zoom").hidden;
   renderDrafting();
   penHintOnce();
 }
-for (const b of $$("#view-seg button")) b.onclick = () => { stopMarking(); setView(b.dataset.view); };
+for (const b of $$("#view-seg button")) b.onclick = () => { stopMarking(); setView(b.dataset.view); sharpenSoon(); };
 
 function renderDrafting() {
   const showing = view === "new" ? hasPreview : true;
@@ -608,6 +673,79 @@ async function renderPdf(url, container, key) {
   }
   container.innerHTML = ""; container.append(frag);
   pageInfo[key] = info;
+  if (zoom > 1) sharpenSoon();
+}
+
+// ---------------- zoom (pinch with two fingers, + / − buttons, ctrl + wheel) ----------------
+let zoom = 1;
+const ZMAX = 4;
+function setZoom(z) {
+  zoom = z;
+  $("#desk").style.setProperty("--zoom", z);
+  $("#zoom-level").textContent = `${Math.round(z * 100)}%`;
+}
+function zoomAt(z, cx, cy) {
+  z = Math.min(ZMAX, Math.max(1, z));
+  if (Math.abs(z - zoom) < 0.001) return;
+  const desk = $("#desk"), r = desk.getBoundingClientRect();
+  const fx = (cx ?? r.left + r.width / 2) - r.left, fy = (cy ?? r.top + r.height / 3) - r.top;
+  const k = z / zoom, sx = desk.scrollLeft + fx, sy = desk.scrollTop + fy;
+  setZoom(z);
+  desk.scrollLeft = sx * k - fx; desk.scrollTop = sy * k - fy;  // keep the point under the fingers still
+  sharpenSoon();
+}
+$("#zoom-in").onclick = () => zoomAt(zoom * 1.25);
+$("#zoom-out").onclick = () => zoomAt(zoom / 1.25);
+$("#zoom-level").onclick = () => zoomAt(1);
+(() => {
+  const desk = $("#desk");
+  const fingers = (list) => [...list].filter((t) => t.touchType !== "stylus"); // the pen draws, it never zooms
+  const dist = (t) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+  let pinch = null, pan = null;
+  desk.addEventListener("touchstart", (e) => {
+    const t = fingers(e.touches);
+    if (t.length === 2) { pinch = { d: dist(t), z: zoom }; pan = null; }
+    else if (t.length === 1 && marking) pan = { x: t[0].clientX, y: t[0].clientY };
+  }, { passive: true });
+  desk.addEventListener("touchmove", (e) => {
+    const t = fingers(e.touches);
+    if (pinch && t.length === 2) {
+      e.preventDefault();
+      zoomAt(pinch.z * dist(t) / pinch.d, (t[0].clientX + t[1].clientX) / 2, (t[0].clientY + t[1].clientY) / 2);
+    } else if (pan && t.length === 1) {  // while marking one finger moves the page (no browser scrolling there)
+      e.preventDefault();
+      desk.scrollBy(pan.x - t[0].clientX, pan.y - t[0].clientY);
+      pan = { x: t[0].clientX, y: t[0].clientY };
+    }
+  }, { passive: false });
+  const end = (e) => { const n = fingers(e.touches).length; if (n < 2) pinch = null; if (!n) pan = null; };
+  desk.addEventListener("touchend", end); desk.addEventListener("touchcancel", end);
+  desk.addEventListener("wheel", (e) => {  // laptop trackpad pinch arrives as ctrl + wheel
+    if (!e.ctrlKey) return;
+    e.preventDefault();
+    zoomAt(zoom * Math.exp(-e.deltaY / 300), e.clientX, e.clientY);
+  }, { passive: false });
+})();
+
+// Pages are drawn for the size they are shown at; after zooming or a layout change, redraw the
+// visible ones more sharply (capped, so a long document does not eat the tablet's memory).
+function sharpenSoon() { clearTimeout(sharpenSoon.t); sharpenSoon.t = setTimeout(sharpen, 280); }
+async function sharpen() {
+  const run = (sharpen.run = (sharpen.run || 0) + 1);
+  const dpr = Math.min(devicePixelRatio || 1, 2.5);
+  for (const p of pageInfo[view] || []) {
+    if (!p.page) continue;
+    const w = p.box.getBoundingClientRect().width;
+    if (!w) continue;
+    const want = Math.min(w * dpr, 2600);
+    if (p.canvas.width >= want * 0.9) continue;
+    const vp = p.page.getViewport({ scale: want / p.vp1.width });
+    const c = document.createElement("canvas"); c.width = vp.width; c.height = vp.height;
+    await p.page.render({ canvasContext: c.getContext("2d"), viewport: vp }).promise;
+    if (run !== sharpen.run) return;
+    p.canvas.replaceWith(c); p.canvas = c;
+  }
+  if (marking) for (const n of marking.layers.keys()) fitInk(n);
 }
 
 async function loadOriginal() {
@@ -787,21 +925,25 @@ $("#pen-undo").onclick = () => {
 };
 $("#pen-send").onclick = () => sendMarks();
 
+// Marking opens a full-screen view of just the document. Two fingers zoom / move it; the pen draws.
+// Ink is stored in page coordinates (0–1), and line width as a share of the page width, so it
+// stays in place at any zoom and looks the same thickness on screen as it was drawn.
 function startMarking() {
   const pages = pageInfo[view];
   if (!pages.length) return;
   marking = { key: view, strokes: new Map(), order: [], layers: [] };
   $("#pen").hidden = true; $("#pen-bar").hidden = false; $("#pen-hint").hidden = false; $("#view-seg").classList.add("locked");
+  $("#job").classList.add("marking-full"); document.body.classList.add("marking-full");
   $("#desk").classList.add("marking");
+  renderPill();
   pages.forEach((p, n) => {
     const ink = document.createElement("canvas"); ink.className = "ink";
-    const r = p.box.getBoundingClientRect(), dpr = Math.min(devicePixelRatio || 1, 2.5);
-    ink.width = Math.round(r.width * dpr); ink.height = Math.round(r.height * dpr);
     p.box.append(ink); marking.layers[n] = ink;
-    let cur = null, lastY = 0;
+    fitInk(n);
+    let cur = null;
     ink.addEventListener("pointerdown", (e) => {
       const penLike = e.pointerType === "pen" || (e.pointerType === "mouse" && new URLSearchParams(location.search).has("pen"));
-      if (!penLike) { lastY = e.clientY; cur = "scroll"; ink.setPointerCapture(e.pointerId); return; }
+      if (!penLike) return;  // fingers move / zoom the page (see the touch handlers on the desk)
       e.preventDefault(); ink.setPointerCapture(e.pointerId);
       cur = [];
       if (!marking.strokes.has(n)) marking.strokes.set(n, []);
@@ -809,7 +951,6 @@ function startMarking() {
       addPoint(e);
     });
     ink.addEventListener("pointermove", (e) => {
-      if (cur === "scroll") { $("#desk").scrollTop -= e.clientY - lastY; lastY = e.clientY; return; }
       if (!cur) return;
       for (const ce of e.getCoalescedEvents ? e.getCoalescedEvents() : [e]) addPoint(ce);
     });
@@ -817,29 +958,45 @@ function startMarking() {
     ink.addEventListener("pointerup", end); ink.addEventListener("pointercancel", end);
     function addPoint(e) {
       const rr = ink.getBoundingClientRect();
-      cur.push({ x: (e.clientX - rr.left) / rr.width, y: (e.clientY - rr.top) / rr.height, p: e.pressure || 0.5 });
-      drawLast(ink, cur);
+      const w = (1.4 + 3.2 * (e.pressure || 0.5)) / (800 * zoom);  // share of page width
+      cur.push({ x: (e.clientX - rr.left) / rr.width, y: (e.clientY - rr.top) / rr.height, w });
+      const k = cur.length;
+      if (k > 1) drawSeg(ink.getContext("2d"), ink.width, ink.height, cur[k - 2], cur[k - 1]);
     }
   });
+  sharpenSoon();
 }
-function drawLast(ink, s) {
-  const g = ink.getContext("2d"); const n = s.length; if (n < 2) return;
-  const a = s[n - 2], b = s[n - 1];
+function fitInk(n) {  // ink canvas at the page's on-screen size (sharp after zooming)
+  const ink = marking.layers[n]; if (!ink) return;
+  const r = ink.parentElement.getBoundingClientRect(), dpr = Math.min(devicePixelRatio || 1, 2.5);
+  const w = Math.round(Math.min(r.width * dpr, 2600)), h = Math.round(w * (r.height / r.width));
+  if (ink.width === w && ink.height === h) return;
+  ink.width = w; ink.height = h;
+  redrawInk(n);
+}
+function drawSeg(g, W, H, a, b) {
   g.strokeStyle = "#d4241b"; g.lineCap = "round"; g.lineJoin = "round";
-  g.lineWidth = (1.4 + 3.2 * b.p) * (ink.width / 800);
-  g.beginPath(); g.moveTo(a.x * ink.width, a.y * ink.height); g.lineTo(b.x * ink.width, b.y * ink.height); g.stroke();
+  g.lineWidth = Math.max(1, b.w * W);
+  g.beginPath(); g.moveTo(a.x * W, a.y * H); g.lineTo(b.x * W, b.y * H); g.stroke();
+}
+function paintStrokes(g, W, H, strokes) {
+  for (const s of strokes || []) for (let i = 1; i < s.length; i++) drawSeg(g, W, H, s[i - 1], s[i]);
 }
 function redrawInk(n) {
-  const ink = marking.layers[n]; ink.getContext("2d").clearRect(0, 0, ink.width, ink.height);
-  for (const s of marking.strokes.get(n) || []) for (let i = 2; i <= s.length; i++) drawLast(ink, s.slice(0, i));
+  const ink = marking.layers[n];
+  const g = ink.getContext("2d"); g.clearRect(0, 0, ink.width, ink.height);
+  paintStrokes(g, ink.width, ink.height, marking.strokes.get(n));
 }
 function stopMarking() {
   if (!marking) return;
   for (const l of marking.layers) l?.remove();
   marking = null;
   $("#pen-bar").hidden = true; $("#pen-hint").hidden = true; $("#view-seg").classList.remove("locked");
+  $("#job").classList.remove("marking-full"); document.body.classList.remove("marking-full");
   $("#desk").classList.remove("marking");
   setView(view);
+  sharpenSoon();
+  renderPill();
 }
 async function sendMarks() {
   if (!marking) return;
@@ -849,10 +1006,10 @@ async function sendMarks() {
   for (const [n, strokes] of marking.strokes) {
     if (!strokes.length) continue;
     any = true;
-    const src = pages[n].canvas, ink = marking.layers[n];
+    const src = pages[n].canvas;
     const c = document.createElement("canvas"); c.width = src.width; c.height = src.height;
     const g = c.getContext("2d"); g.fillStyle = "#fff"; g.fillRect(0, 0, c.width, c.height);
-    g.drawImage(src, 0, 0); g.drawImage(ink, 0, 0, c.width, c.height);
+    g.drawImage(src, 0, 0); paintStrokes(g, c.width, c.height, strokes);
     const blob = await new Promise((r) => c.toBlob(r, "image/jpeg", 0.88));
     fd.append("marks", new File([blob], `page-${n + 1}.jpg`, { type: "image/jpeg" }));
   }
