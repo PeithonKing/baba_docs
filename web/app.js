@@ -376,6 +376,7 @@ function handleEvent(ev, replay) {
     case "error": setStatus(null); add(el("div", "msg err", ev.text)); break;
     case "interrupted": setStatus(null); add(el("div", "msg note", ev.text)); break;
     case "title": job.title = ev.title; $("#top-title").textContent = ev.title; break;
+    case "template": job.template = ev.template; job.format = ev.format; break;
     case "preview":
       if (!replay && "save_state" in ev) job.save_state = ev.save_state; // replay: the job's own state is newer
       if (ev.format) job.format = ev.format;

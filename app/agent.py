@@ -28,7 +28,7 @@ from claude_agent_sdk import (
     tool,
 )
 
-from . import config, memory, nextcloud, render, sources
+from . import config, jobs, memory, nextcloud, render, sources
 from .jobs import Job, load
 
 log = logging.getLogger("gcmv.agent")
@@ -245,6 +245,26 @@ class AgentSession:
             self.emit({"type": "title", "title": job.title})
             return _text("ok")
 
+        kinds = {t["id"]: t for t in jobs.templates() if not t.get("library")}
+
+        @tool("use_template", "Switch this document to another kind (" + ", ".join(
+            f"{k}: {t['name']} – {t['description']}" for k, t in kinds.items()) + "). Its files (GUIDE.md, "
+              "layouts) are copied into the working folder; read GUIDE.md again afterwards. Ask him first.",
+              {"template": str})
+        async def use_template(args: dict[str, Any]):
+            job, new = self.job, args["template"].strip()
+            if new not in kinds:
+                return _text(f"unknown kind; choose one of: {', '.join(kinds)}", True)
+            if new != job.template:
+                job.template = new
+                if job.format not in kinds[new]["formats"]:
+                    job.format = kinds[new]["formats"][0]
+                await asyncio.to_thread(jobs.sync_template, job)
+                job.save()
+                self.emit({"type": "template", "template": new, "format": job.format})
+            return _text(f"Now: {kinds[new]['name']}. Output: {job.format}. Read GUIDE.md now (it was replaced), "
+                         "then carry on with everything he already told you.")
+
         # ---- Nextcloud --------------------------------------------------------
         def need_nc():
             return None if nextcloud.configured() else _text("Nextcloud is not set up on this server.", True)
@@ -382,7 +402,7 @@ class AgentSession:
             await nextcloud.delete(args["path"])
             return _text("deleted (it is in his Nextcloud trash for a while)")
 
-        return [ask_user, compile_pdf, render_docx, show_document, convert, set_title,
+        return [ask_user, compile_pdf, render_docx, show_document, convert, set_title, use_template,
                 nc_list, nc_search, nc_download, nc_save, nc_move, nc_delete]
 
     def _preview(self, fmt: str | None = None):
@@ -420,6 +440,7 @@ class AgentSession:
                 "TZ": "Asia/Kolkata",
             },
             stderr=lambda line: log.debug("cli: %s", line),
+            max_buffer_size=32 * 1024 * 1024,  # a tool result with a photo/page images is one big line (default 1 MB)
         )
         self.client = ClaudeSDKClient(opts)
         await self.client.connect()

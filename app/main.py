@@ -231,10 +231,10 @@ def _store(job: jobs.Job, name: str, data: bytes, prefix: str = "photo") -> tupl
         except Exception:
             img = None
         if img is not None:
-            img.thumbnail((2400, 2400))
+            img.thumbnail((2000, 2000))  # Claude sees at most ~1568px anyway
             n = len(list(up.glob(f"{prefix}_*.jpg"))) + 1
             p = up / f"{prefix}_{n}.jpg"
-            img.save(p, "JPEG", quality=90)
+            img.save(p, "JPEG", quality=85)
             return f"uploads/{p.name}", "mark" if prefix == "mark" else "photo"
     p = _unique(up, _safe_name(name, f"file{ext or ''}"))
     p.write_bytes(data)
